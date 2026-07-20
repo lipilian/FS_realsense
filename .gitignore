@@ -4,3 +4,5 @@ Fast-FoundationStereo/
 models/**/*.engine
 models/**/*.onnx
 models/**/*.pth
+
+data/
