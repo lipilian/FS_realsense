@@ -34,3 +34,27 @@ pip install -r requirements.txt
 ```
 python scripts/run_demo.py --model_dir weights/23-36-37/model_best_bp2_serialize.pth --left_file demo_data/left.png --right_file demo_data/right.png --intrinsic_file demo_data/K.txt --out_dir output/ --remove_invisible 0 --denoise_cloud 1  --scale 1 --get_pc 1 --valid_iters 8 --max_disp 192 --zfar 100
 ```
+## 1.1 Build plug in 
+```
+cmake -S . -B build \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_CUDA_COMPILER=/usr/local/cuda-13.2/bin/nvcc \
+  -DCMAKE_CUDA_ARCHITECTURES=120 \
+  -DCUDAToolkit_ROOT=/usr/local/cuda-13.2 \
+  -DTENSORRT_ROOT=/usr
+cmake --build build -j4
+```
+```
+python scripts/make_plugin_onnx.py \
+  --model_dir weights/23-36-37/model_best_bp2_serialize.pth \
+  --save_path output/ffs_plugin_1280x800 \
+  --height 800 \
+  --width 1280 \
+  --valid_iters 4 \
+  --max_disp 192
+```
+```
+cpp/build/ffs_build_single_engine \
+  output/ffs_plugin_1280x800/fast_foundationstereo_plugin.onnx \
+  output/ffs_plugin_1280x800/fast_foundationstereo.engine
+```
