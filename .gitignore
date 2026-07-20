@@ -1,1 +1,6 @@
 Fast-FoundationStereo/
+
+# Generated model binaries are SDK/GPU-specific and must stay out of Git.
+models/**/*.engine
+models/**/*.onnx
+models/**/*.pth
