@@ -101,3 +101,9 @@ cmake --build build --parallel
   --engine-dir models/ffs_1280x800 \
   --output data/offline_test/benchmark_100
 ```
+## 2.3 No UI , 15 hz 1280x800 inferencing with realtime D455 camera.
+```
+./build/ffs_live_infer \
+  --engine-dir models/ffs_1280x800 \
+  --max-depth-m 1
+```

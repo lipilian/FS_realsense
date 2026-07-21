@@ -68,6 +68,7 @@ if(FFS_VIEWER_BUILD_OFFLINE_VALIDATE)
 
   add_library(ffs_viewer_offline STATIC
     src/io/db3_stereo_source.cpp
+    src/io/d455_stereo_source.cpp
     src/inference/ffs_runner.cpp
     src/validation/offline_validator.cpp
   )
@@ -99,6 +100,13 @@ if(FFS_VIEWER_BUILD_OFFLINE_VALIDATE)
     FFS_VIEWER_DEFAULT_CONFIG="${FFS_VIEWER_DEFAULT_CONFIG}"
   )
   ffs_viewer_enable_warnings(ffs_offline_validate)
+
+  add_executable(ffs_live_infer apps/live_infer/main.cpp)
+  target_link_libraries(ffs_live_infer PRIVATE ffs_viewer::offline)
+  target_compile_definitions(ffs_live_infer PRIVATE
+    FFS_VIEWER_DEFAULT_ENGINE_DIR="${FFS_VIEWER_DEFAULT_ENGINE_DIR}"
+  )
+  ffs_viewer_enable_warnings(ffs_live_infer)
 
   add_custom_command(TARGET ffs_offline_validate POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E make_directory
