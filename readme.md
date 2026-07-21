@@ -84,6 +84,9 @@ cmake --build build --parallel
 ```
 ./build/ffs_offline_validate \
   --input data/offline_test/raw/test_D455.db3 \
-  --frames 20 \
-  --output data/offline_test/extracted_20
+  --frames 1 \
+  --infer-frame 1 \
+  --engine-dir models/ffs_1280x800 \
+  --max-depth-m 1 \
+  --output data/offline_test/infer_frame_000001
 ```

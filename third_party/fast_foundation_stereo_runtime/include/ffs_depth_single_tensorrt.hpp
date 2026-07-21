@@ -39,6 +39,14 @@ public:
                int input_h, int input_w,
                float* d_disp_out);
 
+    // Device Y8 input path for rectified monochrome stereo cameras such as D455.
+    // The input must exactly match the fixed engine resolution. Each Y8 sample is
+    // replicated to the RGB CHW planes; image normalization is part of Route A.
+    void inferY8(const uint8_t* d_left_y8, const uint8_t* d_right_y8,
+                 int input_h, int input_w,
+                 float* d_disp_out);
+
+
     void dispToDepth(const float* d_disp,
                      int height, int width,
                      float fx, float baseline_m,
@@ -64,6 +72,7 @@ private:
     void allocateBuffers();
     void freeDeviceBuffers();
     void preprocessRGBGPU(const uint8_t* d_rgb, int src_h, int src_w, float* d_output);
+    void preprocessY8GPU(const uint8_t* d_y8, int src_h, int src_w, float* d_output);
 
     FFSInferenceConfig config_;
 

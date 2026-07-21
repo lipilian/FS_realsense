@@ -113,6 +113,26 @@ __global__ void preprocessRGBToCHWKernel(
     }
 }
 
+// D455 infrared frames are already rectified, single-channel Y8 images.
+// The Route A engine performs its own normalization, so only replicate the
+// intensity into the three channels expected by the network.
+__global__ void preprocessY8ToCHWKernel(
+    const uint8_t* __restrict__ d_y8,
+    float* __restrict__ d_chw,
+    int height, int width)
+{
+    const int x = blockIdx.x * blockDim.x + threadIdx.x;
+    const int y = blockIdx.y * blockDim.y + threadIdx.y;
+    if (x >= width || y >= height) return;
+
+    const int hw = height * width;
+    const int index = y * width + x;
+    const float intensity = static_cast<float>(d_y8[index]);
+    d_chw[index] = intensity;
+    d_chw[hw + index] = intensity;
+    d_chw[2 * hw + index] = intensity;
+}
+
 // =========================================================================
 // 3. Uniform resize + border-replicate padding  (aspect-ratio preserving)
 //    Pixels in [0, scaled_w) x [0, scaled_h) are bilinear-sampled from src.
@@ -291,6 +311,15 @@ void ffsCudaPreprocessRGBToCHW(
     dim3 blk(32, 16);
     dim3 grd((dst_w + 31) / 32, (dst_h + 15) / 16);
     preprocessRGBToCHWKernel<<<grd, blk, 0, s>>>(d_rgb, d_chw, src_h, src_w, dst_h, dst_w);
+}
+
+void ffsCudaPreprocessY8ToCHW(
+    const uint8_t* d_y8, float* d_chw,
+    int height, int width, cudaStream_t s)
+{
+    dim3 blk(32, 16);
+    dim3 grd((width + 31) / 32, (height + 15) / 16);
+    preprocessY8ToCHWKernel<<<grd, blk, 0, s>>>(d_y8, d_chw, height, width);
 }
 
 void ffsCudaResizeUniformAndPad(

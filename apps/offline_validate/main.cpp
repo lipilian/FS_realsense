@@ -1,19 +1,28 @@
+#include "ffs_viewer/inference/ffs_runner.hpp"
 #include "ffs_viewer/io/db3_stereo_source.hpp"
 
 #include <opencv2/core.hpp>
 #include <opencv2/imgcodecs.hpp>
+#include <opencv2/imgproc.hpp>
 
+#include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
-#include <stdexcept>
+#include <limits>
+#include <memory>
 #include <sstream>
+#include <stdexcept>
 #include <string>
+#include <vector>
 
 namespace fs = std::filesystem;
+using ffs_viewer::inference::DisparityFrame;
+using ffs_viewer::inference::FfsRunner;
 using ffs_viewer::io::Db3StereoSource;
 using ffs_viewer::io::StereoCalibration;
 using ffs_viewer::io::StereoFrame;
@@ -25,15 +34,28 @@ struct Options {
     int frames = 20;
     fs::path output;
     bool write_output = false;
+    fs::path engine_dir = FFS_VIEWER_DEFAULT_ENGINE_DIR;
+    int infer_frame = 0;
+    float max_depth_m = 10.0F;
 };
+
+std::string frameStem(int index) {
+    std::ostringstream stream;
+    stream << "frame_" << std::setw(6) << std::setfill('0') << index;
+    return stream.str();
+}
 
 void printUsage(const char* executable) {
     std::cout
         << "Usage: " << executable << " --input <recording.db3> [options]\n"
         << "Options:\n"
-        << "  --frames <count>   Number of synchronized pairs to inspect (default: 20)\n"
-        << "  --output <dir>     Save Y8 PNG pairs, calibration.yaml, and metadata.csv\n"
-        << "  --help             Show this help message\n";
+        << "  --frames <count>      Number of synchronized pairs to inspect (default: 20)\n"
+        << "  --output <dir>        Save Y8 PNG pairs, calibration.yaml, and metadata.csv\n"
+        << "  --infer-frame <index> Run FFS on this one-based pair; requires --output\n"
+        << "  --max-depth-m <m>   Keep depth and cloud points within this distance (default: 10)\n"
+        << "  --engine-dir <dir>    Engine directory (default: "
+        << FFS_VIEWER_DEFAULT_ENGINE_DIR << ")\n"
+        << "  --help                Show this help message\n";
 }
 
 Options parseOptions(int argc, char** argv) {
@@ -44,7 +66,8 @@ Options parseOptions(int argc, char** argv) {
             printUsage(argv[0]);
             std::exit(EXIT_SUCCESS);
         }
-        if (argument == "--input" || argument == "--frames" || argument == "--output") {
+        if (argument == "--input" || argument == "--frames" || argument == "--output" ||
+            argument == "--engine-dir" || argument == "--infer-frame" || argument == "--max-depth-m") {
             if (++i >= argc) {
                 throw std::runtime_error("Missing value for " + argument);
             }
@@ -53,9 +76,15 @@ Options parseOptions(int argc, char** argv) {
                 options.input = value;
             } else if (argument == "--frames") {
                 options.frames = std::stoi(value);
-            } else {
+            } else if (argument == "--output") {
                 options.output = value;
                 options.write_output = true;
+            } else if (argument == "--engine-dir") {
+                options.engine_dir = value;
+            } else if (argument == "--infer-frame") {
+                options.infer_frame = std::stoi(value);
+            } else {
+                options.max_depth_m = std::stof(value);
             }
             continue;
         }
@@ -67,6 +96,16 @@ Options parseOptions(int argc, char** argv) {
     }
     if (options.frames <= 0) {
         throw std::runtime_error("--frames must be positive");
+    }
+    if (options.infer_frame < 0) {
+        throw std::runtime_error("--infer-frame must be zero (disabled) or positive");
+    }
+    if (!std::isfinite(options.max_depth_m) || options.max_depth_m <= 0.0F) {
+        throw std::runtime_error("--max-depth-m must be finite and positive");
+    }
+
+    if (options.infer_frame > 0 && !options.write_output) {
+        throw std::runtime_error("--infer-frame requires --output so validation artifacts are retained");
     }
     return options;
 }
@@ -108,12 +147,7 @@ void writeCalibration(const fs::path& output, const StereoCalibration& calibrati
 }
 
 void writePngPair(const fs::path& output, int index, const StereoFrame& frame) {
-    const std::string stem = "frame_" + [&] {
-        std::ostringstream stream;
-        stream << std::setw(6) << std::setfill('0') << index;
-        return stream.str();
-    }();
-
+    const std::string stem = frameStem(index);
     const cv::Mat left(frame.height, frame.width, CV_8UC1,
                        const_cast<std::uint8_t*>(frame.left_y8.data()));
     const cv::Mat right(frame.height, frame.width, CV_8UC1,
@@ -122,6 +156,160 @@ void writePngPair(const fs::path& output, int index, const StereoFrame& frame) {
         !cv::imwrite((output / (stem + "_right.png")).string(), right)) {
         throw std::runtime_error("Failed to write Y8 PNG pair " + std::to_string(index));
     }
+}
+
+void writeDisparityArtifacts(const fs::path& output, int index,
+                             const DisparityFrame& disparity) {
+    const std::string stem = frameStem(index);
+    const fs::path raw_path = output / (stem + "_disparity.f32");
+    std::ofstream raw(raw_path, std::ios::binary);
+    if (!raw) {
+        throw std::runtime_error("Cannot write disparity file: " + raw_path.string());
+    }
+    raw.write(reinterpret_cast<const char*>(disparity.values.data()),
+              static_cast<std::streamsize>(disparity.values.size() * sizeof(float)));
+    if (!raw) {
+        throw std::runtime_error("Failed while writing disparity file: " + raw_path.string());
+    }
+
+    const cv::Mat disparity_float(disparity.height, disparity.width, CV_32FC1,
+                                  const_cast<float*>(disparity.values.data()));
+    cv::Mat disparity_u8;
+    float visualization_max = 1.0F;
+    for (const float value : disparity.values) {
+        if (std::isfinite(value)) {
+            visualization_max = std::max(visualization_max, value);
+        }
+    }
+    disparity_float.convertTo(disparity_u8, CV_8UC1, 255.0 / visualization_max);
+    cv::Mat visualization;
+    cv::applyColorMap(disparity_u8, visualization, cv::COLORMAP_TURBO);
+    const fs::path visualization_path = output / (stem + "_disparity_vis.png");
+    if (!cv::imwrite(visualization_path.string(), visualization)) {
+        throw std::runtime_error("Cannot write disparity preview: " + visualization_path.string());
+    }
+}
+
+struct PointXyzi {
+    float x;
+    float y;
+    float z;
+    float intensity;
+};
+static_assert(sizeof(PointXyzi) == 4 * sizeof(float));
+
+struct DepthSummary {
+    std::size_t valid_pixels = 0;
+    float min_depth_m = std::numeric_limits<float>::infinity();
+    float max_depth_m = 0.0F;
+};
+
+DepthSummary writeDepthAndCloudArtifacts(const fs::path& output, int index,
+                                           const DisparityFrame& disparity,
+                                           const StereoFrame& frame,
+                                           const StereoCalibration& calibration,
+                                           float max_depth_m) {
+    if (disparity.width != frame.width || disparity.height != frame.height ||
+        calibration.left.width != frame.width || calibration.left.height != frame.height) {
+        throw std::runtime_error("Disparity, image, and left-camera dimensions must match");
+    }
+    if (calibration.left.fx <= 0.0F || calibration.left.fy <= 0.0F ||
+        calibration.baseline_m <= 0.0F) {
+        throw std::runtime_error("Stereo calibration contains invalid intrinsics or baseline");
+    }
+
+    const std::size_t pixels = static_cast<std::size_t>(disparity.width) * disparity.height;
+    std::vector<float> depth_m(pixels, std::numeric_limits<float>::quiet_NaN());
+    std::vector<PointXyzi> points;
+    points.reserve(pixels);
+    DepthSummary summary;
+    const float focal_baseline = calibration.left.fx * calibration.baseline_m;
+
+    for (int y = 0; y < disparity.height; ++y) {
+        for (int x = 0; x < disparity.width; ++x) {
+            const std::size_t pixel = static_cast<std::size_t>(y) * disparity.width + x;
+            const float disparity_px = disparity.values[pixel];
+            if (!std::isfinite(disparity_px) || disparity_px <= 0.0F) {
+                continue;
+            }
+            const float z = focal_baseline / disparity_px;
+            if (!std::isfinite(z) || z < 0.1F || z > max_depth_m) {
+                continue;
+            }
+
+            depth_m[pixel] = z;
+            points.push_back({
+                (static_cast<float>(x) - calibration.left.cx) * z / calibration.left.fx,
+                (static_cast<float>(y) - calibration.left.cy) * z / calibration.left.fy,
+                z,
+                static_cast<float>(frame.left_y8[pixel]) / 255.0F,
+            });
+            ++summary.valid_pixels;
+            summary.min_depth_m = std::min(summary.min_depth_m, z);
+            summary.max_depth_m = std::max(summary.max_depth_m, z);
+        }
+    }
+
+    const std::string stem = frameStem(index);
+    const fs::path depth_path = output / (stem + "_depth.f32");
+    std::ofstream depth_file(depth_path, std::ios::binary);
+    if (!depth_file) {
+        throw std::runtime_error("Cannot write depth file: " + depth_path.string());
+    }
+    depth_file.write(reinterpret_cast<const char*>(depth_m.data()),
+                     static_cast<std::streamsize>(depth_m.size() * sizeof(float)));
+    if (!depth_file) {
+        throw std::runtime_error("Failed while writing depth file: " + depth_path.string());
+    }
+
+    cv::Mat depth_u8(disparity.height, disparity.width, CV_8UC1, cv::Scalar(0));
+    for (int y = 0; y < disparity.height; ++y) {
+        for (int x = 0; x < disparity.width; ++x) {
+            const float z = depth_m[static_cast<std::size_t>(y) * disparity.width + x];
+            if (std::isfinite(z)) {
+                const float normalized = std::clamp(1.0F - z / max_depth_m, 0.0F, 1.0F);
+                depth_u8.at<std::uint8_t>(y, x) = std::max(1, static_cast<int>(std::lround(255.0F * normalized)));
+            }
+        }
+    }
+    cv::Mat depth_visualization;
+    cv::applyColorMap(depth_u8, depth_visualization, cv::COLORMAP_TURBO);
+    depth_visualization.setTo(cv::Scalar(0, 0, 0), depth_u8 == 0);
+    const fs::path depth_vis_path = output / (stem + "_depth_vis.png");
+    if (!cv::imwrite(depth_vis_path.string(), depth_visualization)) {
+        throw std::runtime_error("Cannot write depth preview: " + depth_vis_path.string());
+    }
+
+    const fs::path cloud_path = output / (stem + "_cloud.ply");
+    std::ofstream cloud_file(cloud_path, std::ios::binary);
+    if (!cloud_file) {
+        throw std::runtime_error("Cannot write point cloud: " + cloud_path.string());
+    }
+    cloud_file << "ply\nformat binary_little_endian 1.0\n"
+               << "element vertex " << points.size() << "\n"
+               << "property float x\nproperty float y\nproperty float z\n"
+               << "property float intensity\nend_header\n";
+    cloud_file.write(reinterpret_cast<const char*>(points.data()),
+                     static_cast<std::streamsize>(points.size() * sizeof(PointXyzi)));
+    if (!cloud_file) {
+        throw std::runtime_error("Failed while writing point cloud: " + cloud_path.string());
+    }
+
+    const fs::path metrics_path = output / (stem + "_depth_metrics.csv");
+    std::ofstream metrics(metrics_path);
+    if (!metrics) {
+        throw std::runtime_error("Cannot write depth metrics: " + metrics_path.string());
+    }
+    metrics << "valid_depth_pixels,total_pixels,min_depth_m,max_depth_m,max_depth_filter_m\n"
+            << summary.valid_pixels << "," << pixels << "," << summary.min_depth_m << ","
+            << summary.max_depth_m << "," << max_depth_m << "\n";
+    return summary;
+}
+
+void printDepthSummary(int index, const DepthSummary& summary, std::size_t total_pixels) {
+    std::cout << "depth frame " << index
+              << ": valid=" << summary.valid_pixels << "/" << total_pixels
+              << " range_m=[" << summary.min_depth_m << ", " << summary.max_depth_m << "]\n";
 }
 
 void printCalibration(const StereoCalibration& calibration) {
@@ -135,6 +323,30 @@ void printCalibration(const StereoCalibration& calibration) {
               << "baseline_m: " << calibration.baseline_m << "\n";
 }
 
+void printDisparitySummary(int index, const DisparityFrame& disparity) {
+    int finite = 0;
+    int positive = 0;
+    float minimum = std::numeric_limits<float>::infinity();
+    float maximum = -std::numeric_limits<float>::infinity();
+    for (const float value : disparity.values) {
+        if (!std::isfinite(value)) {
+            continue;
+        }
+        ++finite;
+        minimum = std::min(minimum, value);
+        maximum = std::max(maximum, value);
+        if (value > 0.0F) {
+            ++positive;
+        }
+    }
+
+    std::cout << "inference frame " << index
+              << ": finite=" << finite << '/' << disparity.values.size()
+              << " positive=" << positive
+              << " min=" << minimum
+              << " max=" << maximum << "\n";
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -145,6 +357,13 @@ int main(int argc, char** argv) {
 
         const StereoCalibration calibration = source.calibration();
         printCalibration(calibration);
+
+        std::unique_ptr<FfsRunner> runner;
+        if (options.infer_frame > 0) {
+            runner = std::make_unique<FfsRunner>(options.engine_dir.string());
+            std::cout << "FFS engine: " << runner->modelWidth() << 'x' << runner->modelHeight()
+                      << ", max_disparity=" << runner->maxDisparity() << "\n";
+        }
 
         std::ofstream metadata;
         if (options.write_output) {
@@ -159,8 +378,9 @@ int main(int argc, char** argv) {
         }
 
         constexpr double kMaxTimestampDeltaMs = 1.0;
+        const int frames_to_read = std::max(options.frames, options.infer_frame);
         int mismatched_pairs = 0;
-        for (int index = 1; index <= options.frames; ++index) {
+        for (int index = 1; index <= frames_to_read; ++index) {
             StereoFrame frame;
             if (!source.next(frame)) {
                 throw std::runtime_error("DB3 playback ended before the requested frame count");
@@ -188,9 +408,17 @@ int main(int argc, char** argv) {
                          << frame.left_timestamp_ms << ',' << frame.right_timestamp_ms << ','
                          << timestamp_delta_ms << '\n';
             }
+            if (index == options.infer_frame) {
+                const DisparityFrame disparity = runner->infer(frame);
+                writeDisparityArtifacts(options.output, index, disparity);
+                const DepthSummary depth_summary = writeDepthAndCloudArtifacts(
+                    options.output, index, disparity, frame, calibration, options.max_depth_m);
+                printDepthSummary(index, depth_summary, disparity.values.size());
+                printDisparitySummary(index, disparity);
+            }
         }
 
-        std::cout << "validated_pairs: " << options.frames
+        std::cout << "validated_pairs: " << frames_to_read
                   << ", synchronization_mismatches: " << mismatched_pairs << "\n";
         return mismatched_pairs == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
     } catch (const std::exception& error) {

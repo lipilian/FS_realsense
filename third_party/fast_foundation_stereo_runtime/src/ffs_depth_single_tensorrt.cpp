@@ -23,6 +23,10 @@ void ffsCudaPreprocessRGBToCHW(
     const uint8_t* d_rgb, float* d_chw,
     int src_h, int src_w, int dst_h, int dst_w, cudaStream_t s);
 
+void ffsCudaPreprocessY8ToCHW(
+    const uint8_t* d_y8, float* d_chw,
+    int height, int width, cudaStream_t s);
+
 void ffsCudaResizeUniformAndPad(
     const uint8_t* d_rgb, float* d_chw,
     int src_h, int src_w, int scaled_h, int scaled_w,
@@ -314,6 +318,15 @@ void FFSSingleEngineInference::preprocessRGBGPU(
     }
 }
 
+void FFSSingleEngineInference::preprocessY8GPU(
+    const uint8_t* d_y8, int src_h, int src_w, float* d_output) {
+    if (src_h != config_.image_height || src_w != config_.image_width) {
+        throw std::runtime_error(
+            "[FFS single] inferY8 requires input dimensions to match the fixed engine");
+    }
+    cuda::ffsCudaPreprocessY8ToCHW(d_y8, d_output, src_h, src_w, stream_);
+}
+
 void FFSSingleEngineInference::infer(
     const uint8_t* d_left_rgb, const uint8_t* d_right_rgb,
     int input_h, int input_w,
@@ -351,6 +364,32 @@ void FFSSingleEngineInference::infer(
         cuda::ffsCudaClampDisparity(d_disp_out, mH * mW, 0.0f, stream_);
         context_->setTensorAddress("disp", d_disp_);
     }
+}
+
+void FFSSingleEngineInference::inferY8(
+    const uint8_t* d_left_y8, const uint8_t* d_right_y8,
+    int input_h, int input_w,
+    float* d_disp_out) {
+    if (!d_left_y8 || !d_right_y8 || !d_disp_out) {
+        throw std::runtime_error("[FFS single] inferY8: null device pointer");
+    }
+    if (input_h <= 0 || input_w <= 0) {
+        throw std::runtime_error("[FFS single] inferY8: input dimensions must be positive");
+    }
+    if (input_h != config_.image_height || input_w != config_.image_width) {
+        throw std::runtime_error(
+            "[FFS single] inferY8 dimensions do not match the fixed TensorRT engine");
+    }
+
+    preprocessY8GPU(d_left_y8, input_h, input_w, d_left_);
+    preprocessY8GPU(d_right_y8, input_h, input_w, d_right_);
+    context_->setTensorAddress("disp", d_disp_out);
+    if (!context_->enqueueV3(stream_)) {
+        throw std::runtime_error("[FFS single] inferY8 enqueue failed");
+    }
+
+    cuda::ffsCudaClampDisparity(d_disp_out, input_h * input_w, 0.0f, stream_);
+    context_->setTensorAddress("disp", d_disp_);
 }
 
 void FFSSingleEngineInference::dispToDepth(
