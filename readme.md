@@ -67,3 +67,23 @@ cpp/build/ffs_build_single_engine \
 sudo apt-get install libopencv-dev
 ```
 
+## 2.1 Build the program
+```
+cmake -S . -B build \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_CUDA_COMPILER=/usr/local/cuda-13.2/bin/nvcc \
+  -DCMAKE_CUDA_ARCHITECTURES=120 \
+  -DCUDAToolkit_ROOT=/usr/local/cuda-13.2 \
+  -DFFS_TENSORRT_ROOT=/usr
+```
+```
+cmake --build build --parallel
+```
+
+## 2.2 Run first Program: extract information from db3 file
+```
+./build/ffs_offline_validate \
+  --input data/offline_test/raw/test_D455.db3 \
+  --frames 20 \
+  --output data/offline_test/extracted_20
+```
