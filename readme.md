@@ -81,6 +81,7 @@ cmake --build build --parallel
 ```
 
 ## 2.2 Run first Program: extract information from db3 file
+- single frame check
 ```
 ./build/ffs_offline_validate \
   --input data/offline_test/raw/test_D455.db3 \
@@ -89,4 +90,14 @@ cmake --build build --parallel
   --engine-dir models/ffs_1280x800 \
   --max-depth-m 1 \
   --output data/offline_test/infer_frame_000001
+```
+- long sequence benchmark
+```
+./build/ffs_offline_validate \
+  --input data/offline_test/raw/test_D455.db3 \
+  --frames 1 \
+  --warmup-frames 20 \
+  --benchmark-frames 100 \
+  --engine-dir models/ffs_1280x800 \
+  --output data/offline_test/benchmark_100
 ```

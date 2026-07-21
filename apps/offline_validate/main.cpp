@@ -23,6 +23,7 @@
 namespace fs = std::filesystem;
 using ffs_viewer::inference::DisparityFrame;
 using ffs_viewer::inference::FfsRunner;
+using ffs_viewer::inference::InferenceTiming;
 using ffs_viewer::io::Db3StereoSource;
 using ffs_viewer::io::StereoCalibration;
 using ffs_viewer::io::StereoFrame;
@@ -37,6 +38,8 @@ struct Options {
     fs::path engine_dir = FFS_VIEWER_DEFAULT_ENGINE_DIR;
     int infer_frame = 0;
     float max_depth_m = 10.0F;
+    int benchmark_frames = 0;
+    int warmup_frames = 20;
 };
 
 std::string frameStem(int index) {
@@ -52,6 +55,8 @@ void printUsage(const char* executable) {
         << "  --frames <count>      Number of synchronized pairs to inspect (default: 20)\n"
         << "  --output <dir>        Save Y8 PNG pairs, calibration.yaml, and metadata.csv\n"
         << "  --infer-frame <index> Run FFS on this one-based pair; requires --output\n"
+        << "  --benchmark-frames <n> Time n frames after warmup; requires --output\n"
+        << "  --warmup-frames <n>    Warmup count for benchmarks (default: 20)\n"
         << "  --max-depth-m <m>   Keep depth and cloud points within this distance (default: 10)\n"
         << "  --engine-dir <dir>    Engine directory (default: "
         << FFS_VIEWER_DEFAULT_ENGINE_DIR << ")\n"
@@ -67,7 +72,7 @@ Options parseOptions(int argc, char** argv) {
             std::exit(EXIT_SUCCESS);
         }
         if (argument == "--input" || argument == "--frames" || argument == "--output" ||
-            argument == "--engine-dir" || argument == "--infer-frame" || argument == "--max-depth-m") {
+            argument == "--engine-dir" || argument == "--infer-frame" || argument == "--max-depth-m" || argument == "--benchmark-frames" || argument == "--warmup-frames") {
             if (++i >= argc) {
                 throw std::runtime_error("Missing value for " + argument);
             }
@@ -83,8 +88,12 @@ Options parseOptions(int argc, char** argv) {
                 options.engine_dir = value;
             } else if (argument == "--infer-frame") {
                 options.infer_frame = std::stoi(value);
-            } else {
+            } else if (argument == "--max-depth-m") {
                 options.max_depth_m = std::stof(value);
+            } else if (argument == "--benchmark-frames") {
+                options.benchmark_frames = std::stoi(value);
+            } else {
+                options.warmup_frames = std::stoi(value);
             }
             continue;
         }
@@ -102,6 +111,13 @@ Options parseOptions(int argc, char** argv) {
     }
     if (!std::isfinite(options.max_depth_m) || options.max_depth_m <= 0.0F) {
         throw std::runtime_error("--max-depth-m must be finite and positive");
+    }
+
+    if (options.benchmark_frames < 0 || options.warmup_frames < 0) {
+        throw std::runtime_error("--benchmark-frames and --warmup-frames must be non-negative");
+    }
+    if (options.benchmark_frames > 0 && !options.write_output) {
+        throw std::runtime_error("--benchmark-frames requires --output for CSV results");
     }
 
     if (options.infer_frame > 0 && !options.write_output) {
@@ -347,6 +363,76 @@ void printDisparitySummary(int index, const DisparityFrame& disparity) {
               << " max=" << maximum << "\n";
 }
 
+struct BenchmarkSample {
+    int frame_index = 0;
+    InferenceTiming timing;
+};
+
+struct LatencySummary {
+    float mean_ms = 0.0F;
+    float p50_ms = 0.0F;
+    float p95_ms = 0.0F;
+    float min_ms = 0.0F;
+    float max_ms = 0.0F;
+};
+
+LatencySummary summarizeLatency(std::vector<float> values) {
+    if (values.empty()) {
+        throw std::runtime_error("Cannot summarize an empty benchmark");
+    }
+    std::sort(values.begin(), values.end());
+    LatencySummary summary;
+    for (const float value : values) {
+        summary.mean_ms += value;
+    }
+    summary.mean_ms /= static_cast<float>(values.size());
+    const auto percentile = [&values](float fraction) {
+        const std::size_t position = static_cast<std::size_t>(std::ceil(fraction * values.size()));
+        return values[std::max<std::size_t>(1, position) - 1];
+    };
+    summary.p50_ms = percentile(0.50F);
+    summary.p95_ms = percentile(0.95F);
+    summary.min_ms = values.front();
+    summary.max_ms = values.back();
+    return summary;
+}
+
+void writeBenchmarkSummary(const fs::path& output, const std::vector<BenchmarkSample>& samples) {
+    std::vector<float> h2d;
+    std::vector<float> inference;
+    std::vector<float> d2h;
+    std::vector<float> gpu_total;
+    std::vector<float> host_total;
+    h2d.reserve(samples.size());
+    inference.reserve(samples.size());
+    d2h.reserve(samples.size());
+    gpu_total.reserve(samples.size());
+    host_total.reserve(samples.size());
+    for (const BenchmarkSample& sample : samples) {
+        h2d.push_back(sample.timing.h2d_ms);
+        inference.push_back(sample.timing.inference_ms);
+        d2h.push_back(sample.timing.d2h_ms);
+        gpu_total.push_back(sample.timing.gpu_total_ms);
+        host_total.push_back(sample.timing.host_total_ms);
+    }
+
+    std::ofstream summary_file(output / "benchmark_summary.csv");
+    if (!summary_file) {
+        throw std::runtime_error("Cannot write benchmark_summary.csv in " + output.string());
+    }
+    summary_file << "stage,mean_ms,p50_ms,p95_ms,min_ms,max_ms\n";
+    const auto write_row = [&summary_file](const char* stage, std::vector<float> values) {
+        const LatencySummary summary = summarizeLatency(std::move(values));
+        summary_file << stage << "," << summary.mean_ms << "," << summary.p50_ms << ","
+                     << summary.p95_ms << "," << summary.min_ms << "," << summary.max_ms << "\n";
+    };
+    write_row("h2d", std::move(h2d));
+    write_row("inference", std::move(inference));
+    write_row("d2h", std::move(d2h));
+    write_row("gpu_total", std::move(gpu_total));
+    write_row("host_total", std::move(host_total));
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -359,7 +445,7 @@ int main(int argc, char** argv) {
         printCalibration(calibration);
 
         std::unique_ptr<FfsRunner> runner;
-        if (options.infer_frame > 0) {
+        if (options.infer_frame > 0 || options.benchmark_frames > 0) {
             runner = std::make_unique<FfsRunner>(options.engine_dir.string());
             std::cout << "FFS engine: " << runner->modelWidth() << 'x' << runner->modelHeight()
                       << ", max_disparity=" << runner->maxDisparity() << "\n";
@@ -377,8 +463,20 @@ int main(int argc, char** argv) {
                         "right_timestamp_ms,timestamp_delta_ms\n";
         }
 
+        std::ofstream benchmark;
+        std::vector<BenchmarkSample> benchmark_samples;
+        if (options.benchmark_frames > 0) {
+            benchmark.open(options.output / "benchmark.csv");
+            if (!benchmark) {
+                throw std::runtime_error("Cannot write benchmark.csv in " + options.output.string());
+            }
+            benchmark << "frame_index,h2d_ms,inference_ms,d2h_ms,gpu_total_ms,host_total_ms\n";
+            benchmark_samples.reserve(static_cast<std::size_t>(options.benchmark_frames));
+        }
+
         constexpr double kMaxTimestampDeltaMs = 1.0;
-        const int frames_to_read = std::max(options.frames, options.infer_frame);
+        const int frames_to_read = std::max({options.frames, options.infer_frame,
+            options.warmup_frames + options.benchmark_frames});
         int mismatched_pairs = 0;
         for (int index = 1; index <= frames_to_read; ++index) {
             StereoFrame frame;
@@ -401,21 +499,42 @@ int main(int argc, char** argv) {
                       << " timestamp_delta_ms=" << std::setprecision(3) << timestamp_delta_ms
                       << (synchronized ? " synchronized" : " MISMATCH") << "\n";
 
-            if (options.write_output) {
+            const bool save_pair = options.write_output &&
+                (options.benchmark_frames == 0 || index == options.infer_frame);
+            if (save_pair) {
                 writePngPair(options.output, index, frame);
                 metadata << index << ',' << frame.left_frame_number << ','
                          << frame.right_frame_number << ',' << std::setprecision(17)
                          << frame.left_timestamp_ms << ',' << frame.right_timestamp_ms << ','
                          << timestamp_delta_ms << '\n';
             }
-            if (index == options.infer_frame) {
+            const bool in_warmup = options.benchmark_frames > 0 &&
+                index <= options.warmup_frames;
+            const bool in_benchmark = options.benchmark_frames > 0 &&
+                index > options.warmup_frames &&
+                index <= options.warmup_frames + options.benchmark_frames;
+            if (in_warmup || in_benchmark || index == options.infer_frame) {
                 const DisparityFrame disparity = runner->infer(frame);
-                writeDisparityArtifacts(options.output, index, disparity);
-                const DepthSummary depth_summary = writeDepthAndCloudArtifacts(
-                    options.output, index, disparity, frame, calibration, options.max_depth_m);
-                printDepthSummary(index, depth_summary, disparity.values.size());
-                printDisparitySummary(index, disparity);
+                if (in_benchmark) {
+                    benchmark_samples.push_back({index, disparity.timing});
+                    benchmark << index << "," << disparity.timing.h2d_ms << ","
+                              << disparity.timing.inference_ms << "," << disparity.timing.d2h_ms << ","
+                              << disparity.timing.gpu_total_ms << "," << disparity.timing.host_total_ms << "\n";
+                }
+                if (index == options.infer_frame) {
+                    writeDisparityArtifacts(options.output, index, disparity);
+                    const DepthSummary depth_summary = writeDepthAndCloudArtifacts(
+                        options.output, index, disparity, frame, calibration, options.max_depth_m);
+                    printDepthSummary(index, depth_summary, disparity.values.size());
+                    printDisparitySummary(index, disparity);
+                }
             }
+        }
+
+        if (options.benchmark_frames > 0) {
+            writeBenchmarkSummary(options.output, benchmark_samples);
+            std::cout << "benchmark_samples: " << benchmark_samples.size()
+                      << " (after " << options.warmup_frames << " warmup frames)\n";
         }
 
         std::cout << "validated_pairs: " << frames_to_read
