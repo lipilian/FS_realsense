@@ -58,3 +58,12 @@ cpp/build/ffs_build_single_engine \
   output/ffs_plugin_1280x800/fast_foundationstereo_plugin.onnx \
   output/ffs_plugin_1280x800/fast_foundationstereo.engine
 ```
+
+## 1.2 Move engine and onnx.yaml to models/ffs_1280x800
+## 1.3 Move thrid party dependencies to thrid_party/fast_foundation_stereo_runtime for inferencing call.
+
+## 1.4 Install opencv
+```
+sudo apt-get install libopencv-dev
+```
+

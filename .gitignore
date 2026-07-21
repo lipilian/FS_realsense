@@ -6,3 +6,5 @@ models/**/*.onnx
 models/**/*.pth
 
 data/
+
+build/
