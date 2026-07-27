@@ -59,7 +59,9 @@ if(FFS_VIEWER_BUILD_OFFLINE_VALIDATE)
   # DB3 playback comes from the current librealsense recording format; OpenCV
   # is used for lossless Y8 PNG artifacts and disparity visualizations.
   find_package(realsense2 2.58 REQUIRED)
-  find_package(OpenCV 4 QUIET COMPONENTS core imgcodecs imgproc)
+  find_package(OpenCV 4 QUIET COMPONENTS core highgui imgcodecs imgproc viz)
+  find_package(OpenGL REQUIRED)
+  find_package(glfw3 REQUIRED)
   if(NOT OpenCV_FOUND)
     message(FATAL_ERROR
       "ffs_offline_validate requires OpenCV 4 development files (core, imgcodecs, imgproc). "
@@ -107,6 +109,16 @@ if(FFS_VIEWER_BUILD_OFFLINE_VALIDATE)
     FFS_VIEWER_DEFAULT_ENGINE_DIR="${FFS_VIEWER_DEFAULT_ENGINE_DIR}"
   )
   ffs_viewer_enable_warnings(ffs_live_infer)
+
+  add_executable(ffs_live_viewer
+    apps/live_viewer/main.cpp
+    apps/live_viewer/opengl_point_cloud_viewer.cpp
+  )
+  target_link_libraries(ffs_live_viewer PRIVATE ffs_viewer::offline glfw GLEW OpenGL::GL)
+  target_compile_definitions(ffs_live_viewer PRIVATE
+    FFS_VIEWER_DEFAULT_ENGINE_DIR="${FFS_VIEWER_DEFAULT_ENGINE_DIR}"
+  )
+  ffs_viewer_enable_warnings(ffs_live_viewer)
 
   add_custom_command(TARGET ffs_offline_validate POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E make_directory

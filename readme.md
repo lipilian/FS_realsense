@@ -107,3 +107,20 @@ cmake --build build --parallel
   --engine-dir models/ffs_1280x800 \
   --max-depth-m 1
 ```
+## 2.4 With UI test
+```
+cmake --build build --parallel
+
+./build/ffs_live_viewer \
+  --engine-dir models/ffs_1280x800 \
+  --point-step 4 \
+  --max-depth-m 1
+```
+
+## 2.4 Add imGUI to repo as third party dependency.
+
+```
+git clone --branch docking --depth 1 \
+  https://github.com/ocornut/imgui.git third_party/imgui
+```
+
