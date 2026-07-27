@@ -1,7 +1,7 @@
 #include "opengl_point_cloud_viewer.hpp"
 
 #include <GL/glew.h>
-#include <GLFW/glfw3.h>
+#include <imgui.h>
 
 #include <algorithm>
 #include <cmath>
@@ -10,66 +10,81 @@
 namespace ffs_viewer::ui {
 
 OpenGLPointCloudViewer::OpenGLPointCloudViewer() {
-    if (!glfwInit())
-        throw std::runtime_error("GLFW initialization failed");
-
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 2);
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 1);
-    window_ = glfwCreateWindow(1000, 800, "FFS OpenGL Point Cloud", nullptr, nullptr);
-    if (!window_) {
-        glfwTerminate();
-        throw std::runtime_error("OpenGL window creation failed");
-    }
-
-    glfwMakeContextCurrent(window_);
-    glewExperimental = GL_TRUE;
-    if (glewInit() != GLEW_OK) {
-        glfwDestroyWindow(window_);
-        window_ = nullptr;
-        glfwTerminate();
-        throw std::runtime_error("GLEW initialization failed");
-    }
-
-    glEnable(GL_DEPTH_TEST);
-    glClearColor(0.F, 0.F, 0.F, 1.F);
     glGenBuffers(1, &xyz_vbo_);
     glGenBuffers(1, &rgb_vbo_);
-
-    glfwSetWindowUserPointer(window_, &camera_);
-    glfwSetMouseButtonCallback(window_, mouseButtonCallback);
-    glfwSetCursorPosCallback(window_, cursorCallback);
-    glfwSetScrollCallback(window_, scrollCallback);
 }
 
 OpenGLPointCloudViewer::~OpenGLPointCloudViewer() noexcept {
-    if (window_) {
-        glfwMakeContextCurrent(window_);
-        glDeleteBuffers(1, &xyz_vbo_);
-        glDeleteBuffers(1, &rgb_vbo_);
-        glfwDestroyWindow(window_);
-    }
-    glfwTerminate();
+    glDeleteBuffers(1, &xyz_vbo_);
+    glDeleteBuffers(1, &rgb_vbo_);
 }
 
-bool OpenGLPointCloudViewer::shouldClose() const {
-    return glfwWindowShouldClose(window_);
-}
 
-void OpenGLPointCloudViewer::render(const std::vector<float> &xyz,
+void OpenGLPointCloudViewer::update(const std::vector<float> &xyz,
                                     const std::vector<std::uint8_t> &rgb) {
-    int width = 0;
-    int height = 0;
-    glfwGetFramebufferSize(window_, &width, &height);
-    if (height == 0)
-        return;
 
     glBindBuffer(GL_ARRAY_BUFFER, xyz_vbo_);
     glBufferData(GL_ARRAY_BUFFER, GLsizeiptr(xyz.size() * sizeof(float)), xyz.data(), GL_DYNAMIC_DRAW);
     glBindBuffer(GL_ARRAY_BUFFER, rgb_vbo_);
     glBufferData(GL_ARRAY_BUFFER, GLsizeiptr(rgb.size()), rgb.data(), GL_DYNAMIC_DRAW);
+    point_count_ = int(xyz.size() / 3);
 
-    glViewport(0, 0, width, height);
+}
+
+void OpenGLPointCloudViewer::interact(bool hovered, bool orbiting, bool panning, float delta_x,
+                                      float delta_y, float wheel) {
+    if (!hovered)
+        return;
+    if (orbiting) {
+        camera_.yaw += delta_x * .35F;
+        camera_.pitch = std::clamp(camera_.pitch + delta_y * .35F, -89.F, 89.F);
+    }
+    if (panning) {
+        camera_.pan_x += delta_x * .002F * camera_.distance;
+        camera_.pan_y -= delta_y * .002F * camera_.distance;
+    }
+    if (wheel != 0.F)
+        camera_.distance = std::clamp(camera_.distance * std::pow(.85F, wheel), .2F, 30.F);
+}
+
+void OpenGLPointCloudViewer::draw(ImDrawList *draw_list, const ImVec2 &screen_pos, const ImVec2 &size,
+                                  float scale_x, float scale_y, float framebuffer_height) {
+    if (size.x <= 0.F || size.y <= 0.F)
+        return;
+    draw_request_.renderer = this;
+    draw_request_.x = screen_pos.x;
+    draw_request_.y = screen_pos.y;
+    draw_request_.width = size.x;
+    draw_request_.height = size.y;
+    draw_request_.scale_x = scale_x;
+    draw_request_.scale_y = scale_y;
+    draw_request_.framebuffer_height = framebuffer_height;
+    draw_list->AddRectFilled(screen_pos, ImVec2(screen_pos.x + size.x, screen_pos.y + size.y),
+                             IM_COL32(12, 15, 20, 255));
+    draw_list->AddCallback(drawCallback, &draw_request_);
+    draw_list->AddCallback(ImDrawCallback_ResetRenderState, nullptr);
+
+}
+void OpenGLPointCloudViewer::drawCallback(const ImDrawList *, const ImDrawCmd *command) {
+    const auto *request = static_cast<const DrawRequest *>(command->UserCallbackData);
+    request->renderer->render(*request);
+}
+void OpenGLPointCloudViewer::render(const DrawRequest &request) const {
+    const int width = std::max(1, int(request.width * request.scale_x));
+    const int height = std::max(1, int(request.height * request.scale_y));
+    const int x = int(request.x * request.scale_x);
+    const int y = int(request.framebuffer_height - (request.y + request.height) * request.scale_y);
+
+    glEnable(GL_SCISSOR_TEST);
+    glScissor(x, y, width, height);
+    glViewport(x, y, width, height);
+    glClearColor(0.F, 0.F, 0.F, 1.F);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    glUseProgram(0);
+    glBindVertexArray(0);
+    glDisable(GL_BLEND);
+    glDisable(GL_CULL_FACE);
+    glEnable(GL_DEPTH_TEST);
     glMatrixMode(GL_PROJECTION);
     glLoadIdentity();
     constexpr float near_plane = .05F;
@@ -89,52 +104,12 @@ void OpenGLPointCloudViewer::render(const std::vector<float> &xyz,
     glBindBuffer(GL_ARRAY_BUFFER, rgb_vbo_);
     glEnableClientState(GL_COLOR_ARRAY);
     glColorPointer(3, GL_UNSIGNED_BYTE, 0, nullptr);
-    glDrawArrays(GL_POINTS, 0, GLsizei(xyz.size() / 3));
+    glDrawArrays(GL_POINTS, 0, point_count_);
     glDisableClientState(GL_COLOR_ARRAY);
     glDisableClientState(GL_VERTEX_ARRAY);
-    glfwSwapBuffers(window_);
+    glDisable(GL_SCISSOR_TEST);
 }
 
-void OpenGLPointCloudViewer::pollEvents() const {
-    glfwPollEvents();
-}
 
-OpenGLPointCloudViewer::Camera *OpenGLPointCloudViewer::cameraFor(GLFWwindow *window) {
-    return static_cast<Camera *>(glfwGetWindowUserPointer(window));
-}
-
-void OpenGLPointCloudViewer::mouseButtonCallback(GLFWwindow *window, int button, int action, int) {
-    auto *camera = cameraFor(window);
-    double x = 0.0;
-    double y = 0.0;
-    glfwGetCursorPos(window, &x, &y);
-    camera->last_x = x;
-    camera->last_y = y;
-    if (button == GLFW_MOUSE_BUTTON_LEFT)
-        camera->left = action == GLFW_PRESS;
-    if (button == GLFW_MOUSE_BUTTON_RIGHT)
-        camera->right = action == GLFW_PRESS;
-}
-
-void OpenGLPointCloudViewer::cursorCallback(GLFWwindow *window, double x, double y) {
-    auto *camera = cameraFor(window);
-    float dx = float(x - camera->last_x);
-    float dy = float(y - camera->last_y);
-    if (camera->left) {
-        camera->yaw += dx * .35F;
-        camera->pitch = std::clamp(camera->pitch + dy * .35F, -89.F, 89.F);
-    }
-    if (camera->right) {
-        camera->pan_x += dx * .002F * camera->distance;
-        camera->pan_y -= dy * .002F * camera->distance;
-    }
-    camera->last_x = x;
-    camera->last_y = y;
-}
-
-void OpenGLPointCloudViewer::scrollCallback(GLFWwindow *window, double, double y_offset) {
-    auto *camera = cameraFor(window);
-    camera->distance = std::clamp(camera->distance * std::pow(.85F, float(y_offset)), .2F, 30.F);
-}
 
 } // namespace ffs_viewer::ui

@@ -8,3 +8,5 @@ models/**/*.pth
 data/
 
 build/
+
+imgui.ini

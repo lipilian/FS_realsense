@@ -67,6 +67,19 @@ if(FFS_VIEWER_BUILD_OFFLINE_VALIDATE)
       "ffs_offline_validate requires OpenCV 4 development files (core, imgcodecs, imgproc). "
       "On Ubuntu install libopencv-dev. To configure only the FFS runtime, use -DFFS_VIEWER_BUILD_OFFLINE_VALIDATE=OFF.")
   endif()
+  add_library(ffs_viewer_imgui STATIC
+    third_party/imgui/imgui.cpp
+    third_party/imgui/imgui_draw.cpp
+    third_party/imgui/imgui_tables.cpp
+    third_party/imgui/imgui_widgets.cpp
+    third_party/imgui/backends/imgui_impl_glfw.cpp
+    third_party/imgui/backends/imgui_impl_opengl3.cpp
+  )
+  target_include_directories(ffs_viewer_imgui PUBLIC
+    third_party/imgui
+    third_party/imgui/backends
+  )
+  target_link_libraries(ffs_viewer_imgui PUBLIC glfw OpenGL::GL)
 
   add_library(ffs_viewer_offline STATIC
     src/io/db3_stereo_source.cpp
@@ -114,7 +127,7 @@ if(FFS_VIEWER_BUILD_OFFLINE_VALIDATE)
     apps/live_viewer/main.cpp
     apps/live_viewer/opengl_point_cloud_viewer.cpp
   )
-  target_link_libraries(ffs_live_viewer PRIVATE ffs_viewer::offline glfw GLEW OpenGL::GL)
+  target_link_libraries(ffs_live_viewer PRIVATE ffs_viewer::offline ffs_viewer_imgui glfw GLEW OpenGL::GL)
   target_compile_definitions(ffs_live_viewer PRIVATE
     FFS_VIEWER_DEFAULT_ENGINE_DIR="${FFS_VIEWER_DEFAULT_ENGINE_DIR}"
   )

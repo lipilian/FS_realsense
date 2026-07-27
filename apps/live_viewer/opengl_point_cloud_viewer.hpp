@@ -3,7 +3,9 @@
 #include <cstdint>
 #include <vector>
 
-struct GLFWwindow;
+struct ImDrawCmd;
+struct ImDrawList;
+struct ImVec2;
 
 namespace ffs_viewer::ui {
 
@@ -15,9 +17,11 @@ class OpenGLPointCloudViewer {
     OpenGLPointCloudViewer(const OpenGLPointCloudViewer &) = delete;
     OpenGLPointCloudViewer &operator=(const OpenGLPointCloudViewer &) = delete;
 
-    bool shouldClose() const;
-    void render(const std::vector<float> &xyz, const std::vector<std::uint8_t> &rgb);
-    void pollEvents() const;
+    void update(const std::vector<float> &xyz, const std::vector<std::uint8_t> &rgb);
+    void draw(ImDrawList *draw_list, const ImVec2 &screen_pos, const ImVec2 &size, float scale_x,
+              float scale_y, float framebuffer_height);
+    void interact(bool hovered, bool orbiting, bool panning, float delta_x, float delta_y, float wheel);
+    int pointCount() const { return point_count_; }
 
   private:
     struct Camera {
@@ -26,21 +30,27 @@ class OpenGLPointCloudViewer {
         float distance = 4.F;
         float pan_x = 0.F;
         float pan_y = 0.F;
-        double last_x = 0.0;
-        double last_y = 0.0;
-        bool left = false;
-        bool right = false;
     };
 
-    static Camera *cameraFor(GLFWwindow *window);
-    static void mouseButtonCallback(GLFWwindow *window, int button, int action, int modifiers);
-    static void cursorCallback(GLFWwindow *window, double x, double y);
-    static void scrollCallback(GLFWwindow *window, double x_offset, double y_offset);
+    struct DrawRequest {
+        OpenGLPointCloudViewer *renderer = nullptr;
+        float x = 0.F;
+        float y = 0.F;
+        float width = 0.F;
+        float height = 0.F;
+        float scale_x = 1.F;
+        float scale_y = 1.F;
+        float framebuffer_height = 0.F;
+    };
 
-    GLFWwindow *window_ = nullptr;
+    static void drawCallback(const ImDrawList *parent_list, const ImDrawCmd *command);
+    void render(const DrawRequest &request) const;
+
     unsigned int xyz_vbo_ = 0;
     unsigned int rgb_vbo_ = 0;
+    int point_count_ = 0;
     Camera camera_;
+    DrawRequest draw_request_;
 };
 
 } // namespace ffs_viewer::ui
