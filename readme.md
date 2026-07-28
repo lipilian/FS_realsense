@@ -23,6 +23,7 @@ sudo apt-get install tensorrt
 ```
 ## 0. Install pytorch 2.13 xformer with cuda 13.2
 ```
+conda create -n ffs python=3.12 && conda activate ffs
 pip3 install torch torchvision --index-url https://download.pytorch.org/whl/cu132
 python3 -m pip install --upgrade ninja
 TORCH_CUDA_ARCH_LIST="12.0" \
@@ -122,5 +123,63 @@ cmake --build build --parallel
 ```
 git clone --branch docking --depth 1 \
   https://github.com/ocornut/imgui.git third_party/imgui
+```
+
+
+## 3. Start working on high resolution and high iteration FoundationStereo.
+
+- use 23-51-11 Vit Large to seek highest performance and quality for single snapshot inferencing.
+- 3GB model weights. 
+- create conda environment with fs.
+```
+conda create -n fs python=3.12 && conda activate fs
+```
+- install torch & xformers
+```
+pip3 install torch torchvision --index-url https://download.pytorch.org/whl/cu132
+python3 -m pip install --upgrade ninja
+TORCH_CUDA_ARCH_LIST="12.0" \
+python3 -m pip install -v --no-build-isolation \
+  git+https://github.com/facebookresearch/xformers.git@main#egg=xformers
+```
+- install other dependencies
+```
+pip install -r requirements.txt
+```
+- test demo
+chaneg run_demo.py line 63 to 
+```
+ckpt = torch.load(ckpt_dir, weights_only=False)
+```
+```
+python scripts/run_demo.py --left_file ./assets/left.png --right_file ./assets/right.png --ckpt_dir ./weights/23-51-11/model_best_bp2.pth --out_dir ./test_outputs/
+```
+- test customized input (realsense D455 input)
+```
+python scripts/run_demo.py --left_file ../data/high_stereo_pair_test/left_rgb.png --right_file ../data/high_stereo_pair_test/right_rgb.png --ckpt_dir ./weights/23-51-11/model_best_bp2.pth --out_dir ./test_outputs/
+```
+- 1280x800 inferencing time is 14.85s 
+Based on descirption of this paper, The model performs better for image width size <1000. You can run with smaller scale, e.g. --scale 0.5 to downsize input image, then upsize the output depth to your need with nearest neighbor interpolation.
+I will scale image to 960x600 to minimize the cost, then add 8 pixels padding to make it 960x608 for inferencing.
+
+## 4. Make the onnx model with 960x608
+- First change cfg.yaml in weights/23-51-11/cfg.yaml 
+```
+max_disp: 192
+```
+- use [python script](python_onnx_maker/make_onnx_liu.py) to make onnx model by set dynamo to False. 
+- convert onnx to tensorrt engine. 
+```
+trtexec --onnx=/home/liu4000/Desktop/FS_realsense/models/fs_960x608_iters32/fs.onnx --saveEngine=/home/liu4000/Desktop/FS_realsense/models/fs_960x608_iters32/fs.engine --fp16
+```
+- test the speed 
+```
+trtexec \
+  --loadEngine=models/fs_960x608_iters32/fs.engine \
+  --warmUp=1000 \
+  --duration=10 \
+  --iterations=100 \
+  --useCudaGraph \
+  --noDataTransfers
 ```
 
