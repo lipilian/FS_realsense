@@ -1,4 +1,5 @@
 Fast-FoundationStereo/
+FoundationStereo/
 
 # Generated model binaries are SDK/GPU-specific and must stay out of Git.
 models/**/*.engine

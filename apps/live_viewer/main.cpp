@@ -1,6 +1,5 @@
+#include "live_pipeline.hpp"
 #include "opengl_point_cloud_viewer.hpp"
-#include "ffs_viewer/inference/ffs_runner.hpp"
-#include "ffs_viewer/io/d455_stereo_source.hpp"
 #include <GL/glew.h>
 #include <atomic>
 #include <condition_variable>
@@ -53,56 +52,6 @@ Options parse(int argc, char **argv) {
         throw std::runtime_error("Invalid option");
     return o;
 }
-cv::Mat bgr(const std::vector<std::uint8_t> &v, int w, int h) {
-    cv::Mat g(h, w, CV_8UC1, const_cast<std::uint8_t *>(v.data())), r;
-    cv::cvtColor(g, r, cv::COLOR_GRAY2BGR);
-    return r;
-}
-cv::Mat dispVis(const ffs_viewer::inference::DisparityFrame &d) {
-    float m = 1;
-    for (float x : d.values)
-        if (std::isfinite(x))
-
-            m = std::max(m, x);
-    cv::Mat f(d.height, d.width, CV_32F, const_cast<float *>(d.values.data())), u, c;
-    f.convertTo(u, CV_8U, 255. / m);
-    cv::applyColorMap(u, c, cv::COLORMAP_TURBO);
-    return c;
-}
-struct CloudData {
-    std::vector<float> xyz;
-    std::vector<std::uint8_t> rgb;
-};
-CloudData buildCloud(const ffs_viewer::inference::DisparityFrame &d,
-                     const ffs_viewer::io::StereoFrame &f,
-                     const ffs_viewer::io::StereoCalibration &k, int step, float maxz) {
-    CloudData out;
-    out.xyz.reserve(size_t(d.width / step) * size_t(d.height / step) * 3);
-    out.rgb.reserve(out.xyz.capacity());
-
-    float fb = k.left.fx * k.baseline_m;
-    for (int y = 0; y < d.height; y += step)
-        for (int x = 0; x < d.width; x += step) {
-            size_t i = size_t(y) * d.width + x;
-            float q = d.values[i];
-            if (!std::isfinite(q) || q <= 0)
-                continue;
-            float z = fb / q;
-            if (z < .1F || z > maxz)
-                continue;
-            out.xyz.insert(out.xyz.end(),
-                           {(x - k.left.cx) * z / k.left.fx, -(y - k.left.cy) * z / k.left.fy, z});
-            auto g = f.left_y8[i];
-            out.rgb.insert(out.rgb.end(), {g, g, g});
-        }
-    return out;
-}
-struct RenderFrame {
-    cv::Mat left;
-    cv::Mat right;
-    cv::Mat disparity;
-    CloudData cloud;
-};
 
 class ImageTexture {
   public:
@@ -205,24 +154,8 @@ int main(int argc, char **argv) {
         ImageTexture left_texture;
         ImageTexture right_texture;
         ImageTexture disparity_texture;
-        std::jthread worker;
-        std::mutex latest_mutex;
-        std::shared_ptr<const RenderFrame> latest_frame;
-        std::shared_ptr<const RenderFrame> displayed_frame;
-        std::mutex error_mutex;
-        std::string worker_error;
-        std::string status = "Stopped";
-        bool running = false;
-        const auto stop = [&]() {
-            if (worker.joinable()) {
-                worker.request_stop();
-                worker.join();
-            }
-            std::scoped_lock lock(latest_mutex);
-            latest_frame.reset();
-            displayed_frame.reset();
-            running = false;
-        };
+        ffs_viewer::live::LivePipeline pipeline({options.engine_dir, options.point_step, options.max_depth_m});
+        std::shared_ptr<const ffs_viewer::live::RenderFrame> displayed_frame;
         while (!glfwWindowShouldClose(window)) {
             glfwPollEvents();
             ImGui_ImplOpenGL3_NewFrame();
@@ -230,75 +163,26 @@ int main(int argc, char **argv) {
             ImGui::NewFrame();
             ImGui::DockSpaceOverViewport();
             ImGui::Begin("Controls");
-            ImGui::Text("Status: %s", status.c_str());
-            if (ImGui::Button("Start") && !running) {
-                {
-                    std::scoped_lock lock(error_mutex);
-                    worker_error.clear();
-                }
-                worker = std::jthread([&](std::stop_token stop_token) {
-                    try {
-                        ffs_viewer::io::D455StereoSource worker_source;
-                        worker_source.open();
-                        const auto worker_calibration = worker_source.calibration();
-                        ffs_viewer::inference::FfsRunner worker_runner(options.engine_dir);
-                        while (!stop_token.stop_requested()) {
-                            ffs_viewer::io::StereoFrame worker_frame;
-                            worker_source.next(worker_frame);
-                            if (stop_token.stop_requested())
-                                break;
-                            const auto disparity = worker_runner.infer(worker_frame);
-                            auto result = std::make_shared<RenderFrame>();
-                            result->left = bgr(worker_frame.left_y8, worker_frame.width, worker_frame.height);
-                            result->right = bgr(worker_frame.right_y8, worker_frame.width, worker_frame.height);
-                            result->disparity = dispVis(disparity);
-                            result->cloud = buildCloud(disparity, worker_frame, worker_calibration,
-                                                       options.point_step, options.max_depth_m);
-                            {
-                                std::scoped_lock lock(latest_mutex);
-                                latest_frame = std::move(result);
-                            }
-                        }
-                    } catch (const std::exception &error) {
-                        std::scoped_lock lock(error_mutex);
-                        worker_error = error.what();
-                    }
-                });
-                running = true;
-                status = "Starting...";
-            }
+            const bool running = pipeline.running();
+            ImGui::Text("Status: %s", pipeline.status().c_str());
+            if (ImGui::Button("Start") && !running)
+                pipeline.start();
             ImGui::SameLine();
             if (ImGui::Button("Stop") && running) {
-                stop();
-                status = "Stopped";
+                pipeline.stop();
+                displayed_frame.reset();
             }
             ImGui::Separator();
             ImGui::Text("Point step: %d   Max depth: %.2f m", options.point_step, options.max_depth_m);
             ImGui::End();
-            if (running) {
-                std::string error;
-                {
-                    std::scoped_lock lock(error_mutex);
-                    error = worker_error;
-                }
-                if (!error.empty()) {
-                    status = std::string("Stopped: ") + error;
-                    stop();
-                } else {
-                    std::shared_ptr<const RenderFrame> latest;
-                    {
-                        std::scoped_lock lock(latest_mutex);
-                        latest = latest_frame;
-                    }
-                    if (latest && latest != displayed_frame) {
-                        viewer.update(latest->cloud.xyz, latest->cloud.rgb);
-                        left_texture.upload(latest->left);
-                        right_texture.upload(latest->right);
-                        disparity_texture.upload(latest->disparity);
-                        displayed_frame = std::move(latest);
-                        status = "Running";
-                    }
-                }
+
+            const auto latest = pipeline.latestFrame();
+            if (latest && latest != displayed_frame) {
+                viewer.update(latest->xyz, latest->rgb);
+                left_texture.upload(latest->left);
+                right_texture.upload(latest->right);
+                disparity_texture.upload(latest->disparity);
+                displayed_frame = latest;
             }
             showStereoPanel(left_texture, right_texture);
             showImagePanel("Disparity", disparity_texture);
@@ -325,7 +209,7 @@ int main(int argc, char **argv) {
             ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
             glfwSwapBuffers(window);
         }
-        stop();
+        pipeline.stop();
         }
         ImGui_ImplOpenGL3_Shutdown();
         ImGui_ImplGlfw_Shutdown();

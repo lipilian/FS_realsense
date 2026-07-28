@@ -125,6 +125,7 @@ if(FFS_VIEWER_BUILD_OFFLINE_VALIDATE)
 
   add_executable(ffs_live_viewer
     apps/live_viewer/main.cpp
+    apps/live_viewer/live_pipeline.cpp
     apps/live_viewer/opengl_point_cloud_viewer.cpp
   )
   target_link_libraries(ffs_live_viewer PRIVATE ffs_viewer::offline ffs_viewer_imgui glfw GLEW OpenGL::GL)
