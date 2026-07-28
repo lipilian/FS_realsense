@@ -172,6 +172,9 @@ int main(int argc, char **argv) {
                 pipeline.stop();
                 displayed_frame.reset();
             }
+            ImGui::SameLine();
+            if (ImGui::Button("Quit"))
+                glfwSetWindowShouldClose(window, GLFW_TRUE);
             ImGui::Separator();
             ImGui::Text("Point step: %d   Max depth: %.2f m", options.point_step, options.max_depth_m);
             ImGui::End();

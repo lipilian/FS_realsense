@@ -85,6 +85,7 @@ if(FFS_VIEWER_BUILD_OFFLINE_VALIDATE)
     src/io/db3_stereo_source.cpp
     src/io/d455_stereo_source.cpp
     src/inference/ffs_runner.cpp
+    src/inference/fs_runner.cpp
     src/validation/offline_validator.cpp
   )
   add_library(ffs_viewer::offline ALIAS ffs_viewer_offline)

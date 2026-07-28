@@ -9,6 +9,10 @@
 #include <thread>
 #include <vector>
 
+namespace ffs_viewer::inference {
+class FfsRunner;
+}
+
 namespace ffs_viewer::live {
 
 struct RenderFrame {
@@ -44,6 +48,7 @@ class LivePipeline {
     void setStatus(std::string status);
 
     LivePipelineOptions options_;
+    std::unique_ptr<inference::FfsRunner> runner_;
     std::jthread worker_;
     mutable std::mutex frame_mutex_;
     std::shared_ptr<const RenderFrame> latest_frame_;

@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <memory>
 #include <opencv2/imgproc.hpp>
 #include <stdexcept>
 #include <utility>
@@ -60,8 +61,10 @@ void buildCloud(RenderFrame &output, const inference::DisparityFrame &disparity,
 } // namespace
 
 LivePipeline::LivePipeline(LivePipelineOptions options) : options_(std::move(options)) {
-    if (options_.engine_dir.empty() || options_.point_step <= 0 || options_.max_depth_m <= 0.F)
+    if (options_.engine_dir.empty() || options_.point_step <= 0 || options_.max_depth_m <= 0.F) {
         throw std::invalid_argument("Invalid live-pipeline options");
+    }
+    runner_ = std::make_unique<inference::FfsRunner>(options_.engine_dir);
 }
 
 LivePipeline::~LivePipeline() {
@@ -116,7 +119,6 @@ void LivePipeline::run(std::stop_token stop_token) {
         io::D455StereoSource source;
         source.open();
         const auto calibration = source.calibration();
-        inference::FfsRunner runner(options_.engine_dir);
         setStatus("Running");
 
         while (!stop_token.stop_requested()) {
@@ -124,7 +126,7 @@ void LivePipeline::run(std::stop_token stop_token) {
             source.next(frame);
             if (stop_token.stop_requested())
                 break;
-            const auto disparity = runner.infer(frame);
+            const auto disparity = runner_->infer(frame);
             auto result = std::make_shared<RenderFrame>();
             result->left = bgr(frame.left_y8, frame.width, frame.height);
             result->right = bgr(frame.right_y8, frame.width, frame.height);
