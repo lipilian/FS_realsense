@@ -24,6 +24,7 @@ namespace {
 
 struct Options {
     std::string engine_dir = FFS_VIEWER_DEFAULT_ENGINE_DIR;
+    std::string fs_engine_dir = FFS_VIEWER_DEFAULT_FS_ENGINE_DIR;
     int point_step = 4;
     float max_depth_m = 10.F;
 };
@@ -33,14 +34,16 @@ Options parse(int argc, char **argv) {
         std::string a = argv[i];
         if (a == "--help") {
             std::cout << "Usage: " << argv[0]
-                      << " [--engine-dir <dir>] [--point-step <n>] [--max-depth-m <m>]\n";
+                      << " [--engine-dir <dir>] [--fs-engine-dir <dir>] [--point-step <n>] [--max-depth-m <m>]\n";
             std::exit(0);
         }
-        if (a == "--engine-dir" || a == "--point-step" || a == "--max-depth-m") {
+        if (a == "--engine-dir" || a == "--fs-engine-dir" || a == "--point-step" || a == "--max-depth-m") {
             if (++i >= argc)
                 throw std::runtime_error("Missing value for " + a);
             if (a == "--engine-dir")
                 o.engine_dir = argv[i];
+            else if (a == "--fs-engine-dir")
+                o.fs_engine_dir = argv[i];
             else if (a == "--point-step")
                 o.point_step = std::stoi(argv[i]);
             else
@@ -154,7 +157,8 @@ int main(int argc, char **argv) {
         ImageTexture left_texture;
         ImageTexture right_texture;
         ImageTexture disparity_texture;
-        ffs_viewer::live::LivePipeline pipeline({options.engine_dir, options.point_step, options.max_depth_m});
+        ffs_viewer::live::LivePipeline pipeline(
+            {options.engine_dir, options.fs_engine_dir, options.point_step, options.max_depth_m});
         std::shared_ptr<const ffs_viewer::live::RenderFrame> displayed_frame;
         while (!glfwWindowShouldClose(window)) {
             glfwPollEvents();

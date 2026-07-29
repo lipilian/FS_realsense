@@ -11,6 +11,7 @@
 
 namespace ffs_viewer::inference {
 class FfsRunner;
+class FsRunner;
 }
 
 namespace ffs_viewer::live {
@@ -25,6 +26,7 @@ struct RenderFrame {
 
 struct LivePipelineOptions {
     std::string engine_dir;
+    std::string fs_engine_dir;
     int point_step = 4;
     float max_depth_m = 10.F;
 };
@@ -49,6 +51,9 @@ class LivePipeline {
 
     LivePipelineOptions options_;
     std::unique_ptr<inference::FfsRunner> runner_;
+    // Loaded for the complete viewer lifetime. It is intentionally not called
+    // by the live FFS preview loop; final capture will use it in a later step.
+    std::unique_ptr<inference::FsRunner> fs_runner_;
     std::jthread worker_;
     mutable std::mutex frame_mutex_;
     std::shared_ptr<const RenderFrame> latest_frame_;

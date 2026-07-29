@@ -149,7 +149,12 @@ FsRunner::FsRunner(std::string engine_path) : impl_(std::make_unique<Impl>()) {
         throw std::runtime_error("Cannot read FS TensorRT engine: " + resolved_path.string());
     }
 
-    impl_->runtime.reset(nvinfer1::createInferRuntime(g_logger));
+    // TensorRT accepts one process-wide logger. The live FFS runner has already
+    // registered its logger, so reuse it when available instead of registering
+    // this adapter's fallback logger and emitting a warning.
+    nvinfer1::ILogger* logger = getLogger();
+    if (logger == nullptr) logger = &g_logger;
+    impl_->runtime.reset(nvinfer1::createInferRuntime(*logger));
     if (!impl_->runtime) {
         throw std::runtime_error("TensorRT failed to create the FS runtime");
     }

@@ -31,6 +31,9 @@ set(FFS_TENSORRT_ROOT "/usr" CACHE PATH "TensorRT installation prefix")
 set(FFS_VIEWER_DEFAULT_ENGINE_DIR
     "${CMAKE_CURRENT_SOURCE_DIR}/models/ffs_1280x800" CACHE PATH
     "Default directory containing fast_foundationstereo.engine and onnx.yaml")
+set(FFS_VIEWER_DEFAULT_FS_ENGINE_DIR
+    "${CMAKE_CURRENT_SOURCE_DIR}/models/fs_960x608_iters32" CACHE PATH
+    "Default directory containing the high-quality fs.engine")
 set(FFS_VIEWER_DEFAULT_CONFIG
     "${CMAKE_CURRENT_SOURCE_DIR}/config/offline_validate.yaml" CACHE FILEPATH
     "Default offline-validation configuration file")
@@ -132,6 +135,7 @@ if(FFS_VIEWER_BUILD_OFFLINE_VALIDATE)
   target_link_libraries(ffs_live_viewer PRIVATE ffs_viewer::offline ffs_viewer_imgui glfw GLEW OpenGL::GL)
   target_compile_definitions(ffs_live_viewer PRIVATE
     FFS_VIEWER_DEFAULT_ENGINE_DIR="${FFS_VIEWER_DEFAULT_ENGINE_DIR}"
+    FFS_VIEWER_DEFAULT_FS_ENGINE_DIR="${FFS_VIEWER_DEFAULT_FS_ENGINE_DIR}"
   )
   ffs_viewer_enable_warnings(ffs_live_viewer)
 

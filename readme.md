@@ -182,3 +182,6 @@ trtexec \
   --useCudaGraph \
   --noDataTransfers
 ```
+
+
+

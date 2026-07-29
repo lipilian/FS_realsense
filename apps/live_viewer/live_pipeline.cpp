@@ -1,6 +1,7 @@
 #include "live_pipeline.hpp"
 
 #include "ffs_viewer/inference/ffs_runner.hpp"
+#include "ffs_viewer/inference/fs_runner.hpp"
 #include "ffs_viewer/io/d455_stereo_source.hpp"
 
 #include <algorithm>
@@ -61,10 +62,12 @@ void buildCloud(RenderFrame &output, const inference::DisparityFrame &disparity,
 } // namespace
 
 LivePipeline::LivePipeline(LivePipelineOptions options) : options_(std::move(options)) {
-    if (options_.engine_dir.empty() || options_.point_step <= 0 || options_.max_depth_m <= 0.F) {
+    if (options_.engine_dir.empty() || options_.fs_engine_dir.empty() || options_.point_step <= 0 ||
+        options_.max_depth_m <= 0.F) {
         throw std::invalid_argument("Invalid live-pipeline options");
     }
     runner_ = std::make_unique<inference::FfsRunner>(options_.engine_dir);
+    fs_runner_ = std::make_unique<inference::FsRunner>(options_.fs_engine_dir);
 }
 
 LivePipeline::~LivePipeline() {
