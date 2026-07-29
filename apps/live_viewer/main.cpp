@@ -172,10 +172,8 @@ int main(int argc, char **argv) {
             if (ImGui::Button("Start") && !running)
                 pipeline.start();
             ImGui::SameLine();
-            if (ImGui::Button("Stop") && running) {
-                pipeline.stop();
-                displayed_frame.reset();
-            }
+            if (ImGui::Button("Capture") && running)
+                pipeline.capture();
             ImGui::SameLine();
             if (ImGui::Button("Quit"))
                 glfwSetWindowShouldClose(window, GLFW_TRUE);

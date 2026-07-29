@@ -1,8 +1,11 @@
 #pragma once
 
+#include "ffs_viewer/io/stereo_source.hpp"
+
 #include <cstdint>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <opencv2/core/mat.hpp>
 #include <stop_token>
 #include <string>
@@ -40,6 +43,7 @@ class LivePipeline {
     LivePipeline &operator=(const LivePipeline &) = delete;
 
     void start();
+    void capture();
     void stop();
     bool running() const;
     std::string status() const;
@@ -55,6 +59,9 @@ class LivePipeline {
     // by the live FFS preview loop; final capture will use it in a later step.
     std::unique_ptr<inference::FsRunner> fs_runner_;
     std::jthread worker_;
+    mutable std::mutex capture_mutex_;
+    std::optional<io::StereoFrame> latest_stereo_;
+    std::optional<io::StereoFrame> pending_capture_;
     mutable std::mutex frame_mutex_;
     std::shared_ptr<const RenderFrame> latest_frame_;
     mutable std::mutex status_mutex_;

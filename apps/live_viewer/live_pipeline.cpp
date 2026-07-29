@@ -81,11 +81,28 @@ void LivePipeline::start() {
         latest_frame_.reset();
     }
     {
+        std::scoped_lock lock(capture_mutex_);
+        latest_stereo_.reset();
+        pending_capture_.reset();
+    }
+    {
         std::scoped_lock lock(status_mutex_);
         running_ = true;
         status_ = "Starting...";
     }
     worker_ = std::jthread([this](std::stop_token stop_token) { run(stop_token); });
+}
+
+void LivePipeline::capture() {
+    bool queued = false;
+    {
+        std::scoped_lock lock(capture_mutex_);
+        if (latest_stereo_) {
+            pending_capture_ = *latest_stereo_;
+            queued = true;
+        }
+    }
+    setStatus(queued ? "Capture queued" : "Waiting for a stereo frame before capture");
 }
 
 void LivePipeline::stop() {
@@ -96,6 +113,11 @@ void LivePipeline::stop() {
     {
         std::scoped_lock lock(frame_mutex_);
         latest_frame_.reset();
+    }
+    {
+        std::scoped_lock lock(capture_mutex_);
+        latest_stereo_.reset();
+        pending_capture_.reset();
     }
     std::scoped_lock lock(status_mutex_);
     running_ = false;
@@ -129,6 +151,31 @@ void LivePipeline::run(std::stop_token stop_token) {
             source.next(frame);
             if (stop_token.stop_requested())
                 break;
+
+            std::optional<io::StereoFrame> capture;
+            {
+                std::scoped_lock lock(capture_mutex_);
+                latest_stereo_ = frame;
+                if (pending_capture_) {
+                    capture = std::move(pending_capture_);
+                    pending_capture_.reset();
+                }
+            }
+
+            if (capture) {
+                setStatus("Processing final capture with FS...");
+                const auto disparity = fs_runner_->infer(*capture);
+                auto result = std::make_shared<RenderFrame>();
+                result->left = bgr(capture->left_y8, capture->width, capture->height);
+                result->right = bgr(capture->right_y8, capture->width, capture->height);
+                result->disparity = disparityVisualization(disparity);
+                {
+                    std::scoped_lock lock(frame_mutex_);
+                    latest_frame_ = std::move(result);
+                }
+                setStatus("Capture complete");
+                break;
+            }
             const auto disparity = runner_->infer(frame);
             auto result = std::make_shared<RenderFrame>();
             result->left = bgr(frame.left_y8, frame.width, frame.height);
