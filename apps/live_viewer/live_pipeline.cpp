@@ -32,9 +32,25 @@ cv::Mat disparityVisualization(const inference::DisparityFrame &disparity) {
     cv::Mat color;
     source.convertTo(normalized, CV_8U, 255.F / maximum);
     cv::applyColorMap(normalized, color, cv::COLORMAP_TURBO);
+    cv::Mat invalid_mask;
+    cv::compare(source, 0.0F, invalid_mask, cv::CMP_LT);
+    color.setTo(cv::Scalar(0, 0, 0), invalid_mask);
     return color;
 }
 
+
+void markInvisibleDisparity(inference::DisparityFrame &disparity) {
+    // For rectified stereo, x_right = x_left - disparity. Pixels whose
+    // correspondence lies left of the right image have no observation there.
+    for (int y = 0; y < disparity.height; ++y) {
+        float *row = disparity.values.data() + static_cast<std::size_t>(y) * disparity.width;
+        for (int x = 0; x < disparity.width; ++x) {
+            if (static_cast<float>(x) - row[x] < 0.0F) {
+                row[x] = -1.0F;
+            }
+        }
+    }
+}
 void buildCloud(RenderFrame &output, const inference::DisparityFrame &disparity,
                 const io::StereoFrame &frame, const io::StereoCalibration &calibration,
                 int point_step, float max_depth_m) {
@@ -163,12 +179,17 @@ void LivePipeline::run(std::stop_token stop_token) {
             }
 
             if (capture) {
-                setStatus("Processing final capture with FS...");
-                const auto disparity = fs_runner_->infer(*capture);
+                setStatus("Running FS inference...");
+                auto disparity = fs_runner_->infer(*capture);
                 auto result = std::make_shared<RenderFrame>();
                 result->left = bgr(capture->left_y8, capture->width, capture->height);
                 result->right = bgr(capture->right_y8, capture->width, capture->height);
+                markInvisibleDisparity(disparity);
+                setStatus("Filtering invisible disparity...");
                 result->disparity = disparityVisualization(disparity);
+                result->final_disparity_width = disparity.width;
+                result->final_disparity_height = disparity.height;
+                result->final_disparity_values = std::move(disparity.values);
                 {
                     std::scoped_lock lock(frame_mutex_);
                     latest_frame_ = std::move(result);

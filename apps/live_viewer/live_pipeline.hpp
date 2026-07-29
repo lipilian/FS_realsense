@@ -23,6 +23,11 @@ struct RenderFrame {
     cv::Mat left;
     cv::Mat right;
     cv::Mat disparity;
+    // Present only for a completed FS capture. Values are row-major FP32;
+    // non-overlapping left-image pixels are marked with -1.0F.
+    int final_disparity_width = 0;
+    int final_disparity_height = 0;
+    std::vector<float> final_disparity_values;
     std::vector<float> xyz;
     std::vector<std::uint8_t> rgb;
 };
