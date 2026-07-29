@@ -170,7 +170,7 @@ max_disp: 192
 - use [python script](python_onnx_maker/make_onnx_liu.py) to make onnx model by set dynamo to False. 
 - convert onnx to tensorrt engine. 
 ```
-trtexec --onnx=/home/liu4000/Desktop/FS_realsense/models/fs_960x608_iters32/fs.onnx --saveEngine=/home/liu4000/Desktop/FS_realsense/models/fs_960x608_iters32/fs.engine --fp16
+trtexec --onnx=/home/liu4000/Desktop/FS_realsense/models/fs_960x608_iters32/fs.onnx --saveEngine=/home/liu4000/Desktop/FS_realsense/models/fs_960x608_iters32/fs.engine
 ```
 - test the speed 
 ```
@@ -182,4 +182,3 @@ trtexec \
   --useCudaGraph \
   --noDataTransfers
 ```
-
