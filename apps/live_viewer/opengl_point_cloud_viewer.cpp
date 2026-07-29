@@ -65,6 +65,10 @@ void OpenGLPointCloudViewer::updateCudaFinal(const ffs_viewer::geometry::FinalCl
     use_cuda_vbo_ = true;
 }
 
+void OpenGLPointCloudViewer::setMaxDepth(float max_depth_m) {
+    max_depth_m_ = std::max(0.F, max_depth_m);
+}
+
 void OpenGLPointCloudViewer::interact(bool hovered, bool orbiting, bool panning, float delta_x,
                                       float delta_y, float wheel) {
     if (!hovered)
@@ -78,7 +82,8 @@ void OpenGLPointCloudViewer::interact(bool hovered, bool orbiting, bool panning,
         camera_.pan_y -= delta_y * .002F * camera_.distance;
     }
     if (wheel != 0.F)
-        camera_.distance = std::clamp(camera_.distance * std::pow(.85F, wheel), .2F, 30.F);
+        camera_.distance = std::clamp(camera_.distance - wheel * .15F,
+                                      -(kCloudDepthOffsetM + max_depth_m_), 30.F);
 }
 
 void OpenGLPointCloudViewer::draw(ImDrawList *draw_list, const ImVec2 &screen_pos, const ImVec2 &size,
@@ -130,7 +135,7 @@ void OpenGLPointCloudViewer::render(const DrawRequest &request) const {
     glTranslatef(camera_.pan_x, camera_.pan_y, -camera_.distance);
     glRotatef(camera_.pitch, 1.F, 0.F, 0.F);
     glRotatef(camera_.yaw, 0.F, 1.F, 0.F);
-    glTranslatef(0.F, 0.F, -2.F);
+    glTranslatef(0.F, 0.F, -kCloudDepthOffsetM);
     // Camera-space depth is +Z; legacy OpenGL views toward -Z.
     glScalef(1.F, 1.F, -1.F);
     glPointSize(2.F);

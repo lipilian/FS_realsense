@@ -160,6 +160,7 @@ int main(int argc, char **argv) {
         ImageTexture disparity_texture;
         ffs_viewer::live::LivePipeline pipeline(
             {options.engine_dir, options.fs_engine_dir, options.point_step, options.max_depth_m});
+        viewer.setMaxDepth(options.max_depth_m);
         std::shared_ptr<const ffs_viewer::live::RenderFrame> displayed_frame;
         while (!glfwWindowShouldClose(window)) {
             glfwPollEvents();
@@ -173,8 +174,9 @@ int main(int argc, char **argv) {
             if (ImGui::Button("Start") && !running)
                 pipeline.start();
             ImGui::SameLine();
-            if (ImGui::Button("Capture") && running)
+            if (ImGui::Button("Capture") && running) {
                 pipeline.capture();
+            }
             ImGui::SameLine();
             if (ImGui::Button("Quit"))
                 glfwSetWindowShouldClose(window, GLFW_TRUE);

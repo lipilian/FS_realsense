@@ -21,6 +21,7 @@ class OpenGLPointCloudViewer {
 
     void update(const std::vector<float> &xyz, const std::vector<std::uint8_t> &rgb);
     void updateCudaFinal(const ffs_viewer::geometry::FinalCloudFrame &cloud);
+    void setMaxDepth(float max_depth_m);
     void draw(ImDrawList *draw_list, const ImVec2 &screen_pos, const ImVec2 &size, float scale_x,
               float scale_y, float framebuffer_height);
     void interact(bool hovered, bool orbiting, bool panning, float delta_x, float delta_y, float wheel);
@@ -30,7 +31,7 @@ class OpenGLPointCloudViewer {
     struct Camera {
         float yaw = 20.F;
         float pitch = -15.F;
-        float distance = 4.F;
+        float distance = .5F;
         float pan_x = 0.F;
         float pan_y = 0.F;
     };
@@ -55,6 +56,8 @@ class OpenGLPointCloudViewer {
     void* cuda_resource_ = nullptr;
     bool use_cuda_vbo_ = false;
     int point_count_ = 0;
+    float max_depth_m_ = 10.F;
+    static constexpr float kCloudDepthOffsetM = 2.F;
     Camera camera_;
     DrawRequest draw_request_;
 };
