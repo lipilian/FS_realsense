@@ -1,6 +1,6 @@
 # D455 Stereo Viewer — Current Status and Implementation Plan
 
-> Last updated: 2026-07-28
+> Last updated: 2026-07-29
 > This document uses the currently working application as its baseline. Completed work is no longer listed as future implementation work.
 
 ## 1. Final Goal
@@ -43,7 +43,11 @@ This pipeline already satisfies the preview requirement before final capture. Ex
 
 - [x] Build a fixed-input `960×608` high-quality FoundationStereo (FS) model.
 - [x] Reserve this model for single-frame processing after final capture; it does not need to run in real time.
-- [ ] Integrate this model into the viewer's final capture workflow.
+- [x] Preload the FS TensorRT engine, context, CUDA buffers, and stream when the viewer starts; release them when it closes.
+- [x] Integrate FS into the viewer's `Capture` workflow on a frozen stereo snapshot.
+- [x] Mark pixels where `x_right = x_left - disparity < 0` as invalid (`-1`) and render them black in the final disparity view.
+- [x] Generate and denoise the final organized point cloud on CUDA with a voxel-hash radius filter.
+- [x] Send the final cloud directly from CUDA to an OpenGL VBO; final display does not copy XYZ/validity data through the CPU or use `point_step`.
 - [ ] Measure single-inference latency, GPU memory use, and output validity through the C++/TensorRT path.
 
 ## 3. Processing Pipelines
@@ -73,8 +77,9 @@ final synchronized stereo snapshot (1280×800)
   -> add 8 rows of padding to produce 960×608
   -> high-quality FS inference
   -> remove or ignore padded rows
-  -> final disparity + validity map
-  -> organized XYZ point cloud
+  -> CUDA invalid-disparity handling (`-1`) + validity map
+  -> CUDA organized XYZ point cloud + voxel-hash denoising
+  -> CUDA-to-OpenGL final point-cloud display
   -> apply user mask
   -> mesh generation
   -> 3D mesh display
@@ -85,7 +90,9 @@ Requirements:
 - Always process the same synchronized pair that was frozen when the user pressed the button. Never mix in a newer live frame.
 - The snapshot must contain the original left and right images, intrinsics, extrinsics or baseline, frame number, and timestamp.
 - Final inference must run in a worker so that the UI remains responsive and can show `processing`, `error`, and `ready` states.
-- In the first version, pause live FFS inference while final inference is running so the two models do not compete for GPU execution and memory. Resume it after a retake or return to preview.
+- In the first version, pause live FFS inference while final inference is running so the two models do not compete for GPU execution and memory. Resume it when the user returns to live preview.
+- The processing status must visibly progress through `Capture queued`, `Running FS inference...`, `Denoising final point cloud...`, and `Capture complete`.
+- The 2D final disparity is retained on the CPU for display; the final XYZ, validity, and grayscale point color remain on the GPU for 3D rendering.
 - Final disparity, point cloud, mask, and Mesh must all be associated with the same snapshot ID.
 
 ## 4. 960×608 Image and Coordinate Mapping
@@ -188,7 +195,7 @@ After the organized-grid approach is validated, decide whether smoothing, hole f
 
 - [x] Add a separate FS engine adapter for `models/fs_960x608_iters32`.
 - [x] Implement preprocessing that exactly matches model construction: `1280×800 -> 960×600 -> 960×608`.
-- [ ] Run offline C++ inference on a saved D455 stereo pair.
+
 - [ ] Export and inspect raw disparity, colorized disparity, and valid-pixel statistics.
 - [ ] Record warmed-up inference latency and GPU memory use.
 
@@ -196,14 +203,17 @@ After the organized-grid approach is validated, decide whether smoothing, hole f
 
 ### Phase B — Final Capture and Final Point Cloud
 
-- [ ] Add the Final Capture button and explicit UI state machine.
-- [ ] Atomically freeze a synchronized stereo pair and calibration snapshot.
-- [ ] Run high-quality FS inference in a background worker.
-- [ ] Remove the padding and generate an organized `960×600` point cloud using scaled intrinsics.
-- [ ] Clearly distinguish preview results from final results in the UI.
+- [x] Replace `Stop` with `Capture` and prevent concurrent capture jobs.
+- [x] Atomically freeze the latest synchronized stereo pair and calibration snapshot.
+- [x] Run high-quality FS inference through the existing pipeline worker.
+- [x] Remove padding, invalidate invisible pixels, and generate an organized `960×600` cloud using scaled intrinsics in CUDA constant memory.
+- [x] Apply CUDA voxel-hash radius denoising (3 cm radius; retain points with at least 30 neighbors).
+- [x] Replace the disparity display with the final FS result and show final-processing status.
+- [x] Upload the full final cloud to OpenGL directly from CUDA; use left IR grayscale as the current point color.
+- [ ] Perform a D455/GUI runtime test of CUDA–OpenGL interop, point-cloud scale/orientation, and final-cloud coloring.
 - [ ] Support processing errors, retry, and retake.
 
-**Gate B:** One final capture always generates disparity and point-cloud results from one snapshot. The UI remains responsive, and metric scale and orientation are correct.
+**Gate B:** One final capture always generates disparity and point-cloud results from one snapshot. The UI remains responsive; CUDA–OpenGL interop, metric scale, and orientation are confirmed on real hardware.
 
 ### Phase C — Left-Image Mask Editing
 
