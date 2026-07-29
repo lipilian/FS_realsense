@@ -1,7 +1,9 @@
 #pragma once
 
+#include "ffs_viewer/geometry/final_cloud_processor.hpp"
 #include "ffs_viewer/inference/ffs_runner.hpp"
 
+#include <functional>
 #include <memory>
 #include <string>
 
@@ -19,6 +21,12 @@ public:
     FsRunner(const FsRunner&) = delete;
     FsRunner& operator=(const FsRunner&) = delete;
 
+
+    // Runs FS and processes its final disparity and organized cloud on CUDA.
+    geometry::FinalCloudFrame inferFinal(const io::StereoFrame& stereo,
+                                         const io::StereoCalibration& calibration,
+                                         float z_max_m,
+                                         const std::function<void()>& on_denoise);
     // Returns an unpadded 960x600 disparity map in model-input pixel units.
     DisparityFrame infer(const io::StereoFrame& stereo);
 

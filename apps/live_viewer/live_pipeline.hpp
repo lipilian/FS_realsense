@@ -28,6 +28,11 @@ struct RenderFrame {
     int final_disparity_width = 0;
     int final_disparity_height = 0;
     std::vector<float> final_disparity_values;
+    const float* final_gpu_xyz = nullptr;
+    const std::uint8_t* final_gpu_valid = nullptr;
+    const float* final_gpu_left_gray = nullptr;
+    int final_gpu_left_row_offset = 0;
+    int final_gpu_point_count = 0;
     std::vector<float> xyz;
     std::vector<std::uint8_t> rgb;
 };

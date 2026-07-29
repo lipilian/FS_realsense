@@ -39,18 +39,6 @@ cv::Mat disparityVisualization(const inference::DisparityFrame &disparity) {
 }
 
 
-void markInvisibleDisparity(inference::DisparityFrame &disparity) {
-    // For rectified stereo, x_right = x_left - disparity. Pixels whose
-    // correspondence lies left of the right image have no observation there.
-    for (int y = 0; y < disparity.height; ++y) {
-        float *row = disparity.values.data() + static_cast<std::size_t>(y) * disparity.width;
-        for (int x = 0; x < disparity.width; ++x) {
-            if (static_cast<float>(x) - row[x] < 0.0F) {
-                row[x] = -1.0F;
-            }
-        }
-    }
-}
 void buildCloud(RenderFrame &output, const inference::DisparityFrame &disparity,
                 const io::StereoFrame &frame, const io::StereoCalibration &calibration,
                 int point_step, float max_depth_m) {
@@ -180,16 +168,21 @@ void LivePipeline::run(std::stop_token stop_token) {
 
             if (capture) {
                 setStatus("Running FS inference...");
-                auto disparity = fs_runner_->infer(*capture);
+                const auto final_cloud = fs_runner_->inferFinal(
+                    *capture, calibration, options_.max_depth_m,
+                    [this] { setStatus("Denoising final point cloud..."); });
                 auto result = std::make_shared<RenderFrame>();
                 result->left = bgr(capture->left_y8, capture->width, capture->height);
                 result->right = bgr(capture->right_y8, capture->width, capture->height);
-                markInvisibleDisparity(disparity);
-                setStatus("Filtering invisible disparity...");
-                result->disparity = disparityVisualization(disparity);
-                result->final_disparity_width = disparity.width;
-                result->final_disparity_height = disparity.height;
-                result->final_disparity_values = std::move(disparity.values);
+                result->disparity = disparityVisualization(final_cloud.disparity);
+                result->final_disparity_width = final_cloud.disparity.width;
+                result->final_disparity_height = final_cloud.disparity.height;
+                result->final_disparity_values = final_cloud.disparity.values;
+                result->final_gpu_xyz = final_cloud.d_xyz;
+                result->final_gpu_valid = final_cloud.d_valid;
+                result->final_gpu_left_gray = final_cloud.d_left_gray;
+                result->final_gpu_left_row_offset = final_cloud.left_row_offset;
+                result->final_gpu_point_count = final_cloud.point_count;
                 {
                     std::scoped_lock lock(frame_mutex_);
                     latest_frame_ = std::move(result);

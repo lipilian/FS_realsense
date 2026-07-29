@@ -1,6 +1,8 @@
 #include "opengl_point_cloud_viewer.hpp"
+#include "ffs_viewer/geometry/final_cloud_processor.hpp"
 
 #include <GL/glew.h>
+#include <cuda_gl_interop.h>
 #include <imgui.h>
 
 #include <algorithm>
@@ -12,11 +14,14 @@ namespace ffs_viewer::ui {
 OpenGLPointCloudViewer::OpenGLPointCloudViewer() {
     glGenBuffers(1, &xyz_vbo_);
     glGenBuffers(1, &rgb_vbo_);
+    glGenBuffers(1, &cuda_vbo_);
 }
 
 OpenGLPointCloudViewer::~OpenGLPointCloudViewer() noexcept {
+    if (cuda_resource_ != nullptr) cudaGraphicsUnregisterResource(static_cast<cudaGraphicsResource*>(cuda_resource_));
     glDeleteBuffers(1, &xyz_vbo_);
     glDeleteBuffers(1, &rgb_vbo_);
+    glDeleteBuffers(1, &cuda_vbo_);
 }
 
 
@@ -28,7 +33,36 @@ void OpenGLPointCloudViewer::update(const std::vector<float> &xyz,
     glBindBuffer(GL_ARRAY_BUFFER, rgb_vbo_);
     glBufferData(GL_ARRAY_BUFFER, GLsizeiptr(rgb.size()), rgb.data(), GL_DYNAMIC_DRAW);
     point_count_ = int(xyz.size() / 3);
+    use_cuda_vbo_ = false;
 
+}
+
+void OpenGLPointCloudViewer::updateCudaFinal(const ffs_viewer::geometry::FinalCloudFrame &cloud) {
+    if (cloud.point_count <= 0) return;
+    if (cuda_resource_ != nullptr) {
+        cudaGraphicsUnregisterResource(static_cast<cudaGraphicsResource*>(cuda_resource_));
+        cuda_resource_ = nullptr;
+    }
+    glBindBuffer(GL_ARRAY_BUFFER, cuda_vbo_);
+    glBufferData(GL_ARRAY_BUFFER, GLsizeiptr(cloud.point_count) * sizeof(ffs_viewer::geometry::GpuPointVertex),
+                 nullptr, GL_DYNAMIC_DRAW);
+    cudaGraphicsResource* resource = nullptr;
+    if (cudaGraphicsGLRegisterBuffer(&resource, cuda_vbo_, cudaGraphicsRegisterFlagsWriteDiscard) != cudaSuccess)
+        throw std::runtime_error("CUDA failed to register final-cloud OpenGL VBO");
+    cuda_resource_ = resource;
+    if (cudaGraphicsMapResources(1, &resource, 0) != cudaSuccess)
+        throw std::runtime_error("CUDA failed to map final-cloud OpenGL VBO");
+    void* device_vertices = nullptr;
+    std::size_t bytes = 0;
+    if (cudaGraphicsResourceGetMappedPointer(&device_vertices, &bytes, resource) != cudaSuccess ||
+        bytes < std::size_t(cloud.point_count) * sizeof(ffs_viewer::geometry::GpuPointVertex))
+        throw std::runtime_error("CUDA final-cloud OpenGL VBO has unexpected size");
+    ffs_viewer::geometry::writeFinalCloudVertices(cloud,
+        static_cast<ffs_viewer::geometry::GpuPointVertex*>(device_vertices), 0);
+    if (cudaStreamSynchronize(0) != cudaSuccess || cudaGraphicsUnmapResources(1, &resource, 0) != cudaSuccess)
+        throw std::runtime_error("CUDA failed to finalize final-cloud OpenGL VBO");
+    point_count_ = cloud.point_count;
+    use_cuda_vbo_ = true;
 }
 
 void OpenGLPointCloudViewer::interact(bool hovered, bool orbiting, bool panning, float delta_x,
@@ -97,13 +131,21 @@ void OpenGLPointCloudViewer::render(const DrawRequest &request) const {
     glRotatef(camera_.pitch, 1.F, 0.F, 0.F);
     glRotatef(camera_.yaw, 0.F, 1.F, 0.F);
     glTranslatef(0.F, 0.F, -2.F);
+    // Camera-space depth is +Z; legacy OpenGL views toward -Z.
+    glScalef(1.F, 1.F, -1.F);
     glPointSize(2.F);
-    glBindBuffer(GL_ARRAY_BUFFER, xyz_vbo_);
     glEnableClientState(GL_VERTEX_ARRAY);
-    glVertexPointer(3, GL_FLOAT, 0, nullptr);
-    glBindBuffer(GL_ARRAY_BUFFER, rgb_vbo_);
     glEnableClientState(GL_COLOR_ARRAY);
-    glColorPointer(3, GL_UNSIGNED_BYTE, 0, nullptr);
+    if (use_cuda_vbo_) {
+        glBindBuffer(GL_ARRAY_BUFFER, cuda_vbo_);
+        glVertexPointer(3, GL_FLOAT, sizeof(ffs_viewer::geometry::GpuPointVertex), nullptr);
+        glColorPointer(4, GL_UNSIGNED_BYTE, sizeof(ffs_viewer::geometry::GpuPointVertex), reinterpret_cast<void*>(3 * sizeof(float)));
+    } else {
+        glBindBuffer(GL_ARRAY_BUFFER, xyz_vbo_);
+        glVertexPointer(3, GL_FLOAT, 0, nullptr);
+        glBindBuffer(GL_ARRAY_BUFFER, rgb_vbo_);
+        glColorPointer(3, GL_UNSIGNED_BYTE, 0, nullptr);
+    }
     glDrawArrays(GL_POINTS, 0, point_count_);
     glDisableClientState(GL_COLOR_ARRAY);
     glDisableClientState(GL_VERTEX_ARRAY);

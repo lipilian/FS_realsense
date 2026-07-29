@@ -120,6 +120,7 @@ struct FsRunner::Impl {
     std::vector<float> host_left;
     std::vector<float> host_right;
     std::vector<float> host_padded_disparity;
+    std::unique_ptr<geometry::FinalCloudProcessor> final_cloud_processor;
 
     ~Impl() {
         if (timing_begin != nullptr) cudaEventDestroy(timing_begin);
@@ -191,6 +192,8 @@ FsRunner::FsRunner(std::string engine_path) : impl_(std::make_unique<Impl>()) {
     allocate(reinterpret_cast<void**>(&impl_->d_left), 3 * pixels * sizeof(float), "allocate FS left input");
     allocate(reinterpret_cast<void**>(&impl_->d_right), 3 * pixels * sizeof(float), "allocate FS right input");
     allocate(reinterpret_cast<void**>(&impl_->d_disparity), pixels * sizeof(float), "allocate FS disparity output");
+    impl_->final_cloud_processor = std::make_unique<geometry::FinalCloudProcessor>(impl_->model_width,
+                                                                                     impl_->content_height);
     if (!impl_->context->setTensorAddress("left", impl_->d_left) ||
         !impl_->context->setTensorAddress("right", impl_->d_right) ||
         !impl_->context->setTensorAddress("disp", impl_->d_disparity)) {
@@ -259,6 +262,28 @@ DisparityFrame FsRunner::infer(const io::StereoFrame& stereo) {
     output.timing.host_total_ms =
         std::chrono::duration<float, std::milli>(host_end - host_begin).count();
     return output;
+}
+
+geometry::FinalCloudFrame FsRunner::inferFinal(const io::StereoFrame& stereo,
+                                                const io::StereoCalibration& calibration,
+                                                float z_max_m,
+                                                const std::function<void()>& on_denoise) {
+    if (stereo.width <= 0 || stereo.height <= 0) {
+        throw std::runtime_error("FS final inference requires positive stereo dimensions");
+    }
+    packY8AsPaddedRgb(stereo.left_y8, stereo.width, stereo.height, impl_->model_width,
+                       impl_->content_height, Impl::kPadTop, Impl::kPadBottom, impl_->host_left);
+    packY8AsPaddedRgb(stereo.right_y8, stereo.width, stereo.height, impl_->model_width,
+                       impl_->content_height, Impl::kPadTop, Impl::kPadBottom, impl_->host_right);
+    checkCuda(cudaMemcpyAsync(impl_->d_left, impl_->host_left.data(), impl_->host_left.size() * sizeof(float),
+                              cudaMemcpyHostToDevice, impl_->stream), "copy final FS left input to GPU");
+    checkCuda(cudaMemcpyAsync(impl_->d_right, impl_->host_right.data(), impl_->host_right.size() * sizeof(float),
+                              cudaMemcpyHostToDevice, impl_->stream), "copy final FS right input to GPU");
+    if (!impl_->context->enqueueV3(impl_->stream)) {
+        throw std::runtime_error("TensorRT failed to enqueue final FS inference");
+    }
+    return impl_->final_cloud_processor->process(impl_->d_disparity, impl_->d_left, impl_->stream, calibration,
+                                                  stereo.width, stereo.height, z_max_m, on_denoise);
 }
 
 int FsRunner::modelWidth() const { return impl_->model_width; }

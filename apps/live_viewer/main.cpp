@@ -1,4 +1,5 @@
 #include "live_pipeline.hpp"
+#include "ffs_viewer/geometry/final_cloud_processor.hpp"
 #include "opengl_point_cloud_viewer.hpp"
 #include <GL/glew.h>
 #include <atomic>
@@ -183,7 +184,17 @@ int main(int argc, char **argv) {
 
             const auto latest = pipeline.latestFrame();
             if (latest && latest != displayed_frame) {
-                viewer.update(latest->xyz, latest->rgb);
+                if (latest->final_gpu_point_count > 0) {
+                    ffs_viewer::geometry::FinalCloudFrame gpu_cloud;
+                    gpu_cloud.d_xyz = latest->final_gpu_xyz;
+                    gpu_cloud.d_valid = latest->final_gpu_valid;
+                    gpu_cloud.d_left_gray = latest->final_gpu_left_gray;
+                    gpu_cloud.left_row_offset = latest->final_gpu_left_row_offset;
+                    gpu_cloud.point_count = latest->final_gpu_point_count;
+                    viewer.updateCudaFinal(gpu_cloud);
+                } else {
+                    viewer.update(latest->xyz, latest->rgb);
+                }
                 left_texture.upload(latest->left);
                 right_texture.upload(latest->right);
                 disparity_texture.upload(latest->disparity);
