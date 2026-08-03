@@ -238,7 +238,7 @@ int main(int argc, char **argv) {
             ImGui::End();
 
             const auto latest = pipeline.latestFrame();
-            if (latest && latest != displayed_frame) {
+            if (!show_mask_editor && latest && latest != displayed_frame) {
                 if (latest->final_gpu_point_count > 0) {
                     viewer.resetToLeftCameraView();
                     ffs_viewer::geometry::FinalCloudFrame gpu_cloud;

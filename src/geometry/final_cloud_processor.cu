@@ -131,7 +131,8 @@ __global__ void initializeMeshKernel(const float* xyz, const std::uint8_t* valid
 }
 __global__ void propagateMeshLabelsKernel(int* parent, int cells_x, int cells_y, int cells) { const int i=blockIdx.x*blockDim.x+threadIdx.x; if(i>=cells||parent[i]<0)return; int p=parent[i],x=i%cells_x,y=i/cells_x; if(x&&parent[i-1]>=0)p=min(p,parent[i-1]); if(x+1<cells_x&&parent[i+1]>=0)p=min(p,parent[i+1]); if(y&&parent[i-cells_x]>=0)p=min(p,parent[i-cells_x]); if(y+1<cells_y&&parent[i+cells_x]>=0)p=min(p,parent[i+cells_x]); parent[i]=p; }
 __global__ void accumulateMeshAreasKernel(const int* parent,const float* cells_area,float* component_area,int cells) { const int i=blockIdx.x*blockDim.x+threadIdx.x; if(i<cells&&parent[i]>=0)atomicAdd(component_area+parent[i],cells_area[i]); }
-__global__ void findLargestMeshKernel(const int* parent,const float* area,int* root,int* best,int cells) { const int i=blockIdx.x*blockDim.x+threadIdx.x; if(i>=cells||parent[i]!=i)return; const int bits=__float_as_int(area[i]); if(bits>atomicMax(best,bits))atomicExch(root,i); }
+__global__ void findLargestMeshKernel(const int* parent,const float* area,int* best,int cells) { const int i=blockIdx.x*blockDim.x+threadIdx.x; if(i<cells&&parent[i]==i) atomicMax(best,__float_as_int(area[i])); }
+__global__ void selectLargestMeshRootKernel(const int* parent,const float* area,const int* best,int* root,int cells) { const int i=blockIdx.x*blockDim.x+threadIdx.x; if(i<cells&&parent[i]==i&&__float_as_int(area[i])==*best) atomicMin(root,i); }
 __global__ void writeMeshIndicesKernel(const int* parent,const int* root,int w,int step,std::uint32_t* indices,int cells_x,int cells) { const int i=blockIdx.x*blockDim.x+threadIdx.x; if(i>=cells)return; const int x=(i%cells_x)*step,y=(i/cells_x)*step,a=y*w+x,b=a+step,c=a+step*w,d=c+step,o=6*i; if(parent[i]>=0&&parent[i]==*root){indices[o]=a;indices[o+1]=b;indices[o+2]=c;indices[o+3]=b;indices[o+4]=d;indices[o+5]=c;}else{indices[o]=indices[o+1]=indices[o+2]=indices[o+3]=indices[o+4]=indices[o+5]=0;} }
 
 struct FinalCloudProcessor::Impl {
@@ -272,9 +273,10 @@ float finalCloudLargestMeshAreaM2(const FinalCloudFrame& cloud, cudaStream_t str
     check(cudaMemsetAsync(cloud.d_mesh_area, 0, std::size_t(cells) * sizeof(float), stream), "clear mesh areas");
     accumulateMeshAreasKernel<<<blocks, 256, 0, stream>>>(cloud.d_mesh_parent, cloud.d_mesh_cell_area, cloud.d_mesh_area, cells);
     check(cudaGetLastError(), "accumulate final-cloud mesh areas");
-    check(cudaMemsetAsync(cloud.d_mesh_best_root, 0xff, sizeof(int), stream), "clear mesh best root");
+    check(cudaMemsetAsync(cloud.d_mesh_best_root, 0x7f, sizeof(int), stream), "clear mesh best root");
     check(cudaMemsetAsync(cloud.d_mesh_best_area_bits, 0, sizeof(int), stream), "clear mesh best area");
-    findLargestMeshKernel<<<blocks, 256, 0, stream>>>(cloud.d_mesh_parent, cloud.d_mesh_area, cloud.d_mesh_best_root, cloud.d_mesh_best_area_bits, cells);
+    findLargestMeshKernel<<<blocks, 256, 0, stream>>>(cloud.d_mesh_parent, cloud.d_mesh_area, cloud.d_mesh_best_area_bits, cells);
+    selectLargestMeshRootKernel<<<blocks, 256, 0, stream>>>(cloud.d_mesh_parent, cloud.d_mesh_area, cloud.d_mesh_best_area_bits, cloud.d_mesh_best_root, cells);
     check(cudaGetLastError(), "find largest final-cloud mesh");
     float area_m2 = 0.F;
     check(cudaMemcpyAsync(&area_m2, cloud.d_mesh_best_area_bits, sizeof(area_m2), cudaMemcpyDeviceToHost, stream), "copy largest mesh area");
