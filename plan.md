@@ -1,6 +1,6 @@
 # D455 Stereo Viewer — Current Status and Implementation Plan
 
-> Last updated: 2026-07-29
+> Last updated: 2026-08-03
 > This document uses the currently working application as its baseline. Completed work is no longer listed as future implementation work.
 
 ## 1. Final Goal
@@ -48,7 +48,7 @@ This pipeline already satisfies the preview requirement before final capture. Ex
 - [x] Mark pixels where `x_right = x_left - disparity < 0` as invalid (`-1`) and render them black in the final disparity view.
 - [x] Generate and denoise the final organized point cloud on CUDA with a voxel-hash radius filter.
 - [x] Send the final cloud directly from CUDA to an OpenGL VBO; final display does not copy XYZ/validity data through the CPU or use `point_step`.
-- [ ] Measure single-inference latency, GPU memory use, and output validity through the C++/TensorRT path.
+- [x] Measure single-inference latency, GPU memory use, and output validity through the C++/TensorRT path.
 
 ## 3. Processing Pipelines
 
@@ -196,8 +196,8 @@ After the organized-grid approach is validated, decide whether smoothing, hole f
 - [x] Add a separate FS engine adapter for `models/fs_960x608_iters32`.
 - [x] Implement preprocessing that exactly matches model construction: `1280×800 -> 960×600 -> 960×608`.
 
-- [ ] Export and inspect raw disparity, colorized disparity, and valid-pixel statistics.
-- [ ] Record warmed-up inference latency and GPU memory use.
+- [x] Export and inspect raw disparity, colorized disparity, and valid-pixel statistics.
+- [x] Record warmed-up inference latency and GPU memory use.
 
 **Gate A:** C++/TensorRT consistently produces a `960×608` disparity map with correct dimensions, orientation, and reasonable values.
 
@@ -210,37 +210,37 @@ After the organized-grid approach is validated, decide whether smoothing, hole f
 - [x] Apply CUDA voxel-hash radius denoising (3 cm radius; retain points with at least 30 neighbors).
 - [x] Replace the disparity display with the final FS result and show final-processing status.
 - [x] Upload the full final cloud to OpenGL directly from CUDA; use left IR grayscale as the current point color.
-- [ ] Perform a D455/GUI runtime test of CUDA–OpenGL interop, point-cloud scale/orientation, and final-cloud coloring.
-- [ ] Support processing errors, retry, and retake.
+- [x] Perform a D455/GUI runtime test of CUDA–OpenGL interop, point-cloud scale/orientation, and final-cloud coloring.
+- [x] Support processing errors, retry, and retake.
 
 **Gate B:** One final capture always generates disparity and point-cloud results from one snapshot. The UI remains responsive; CUDA–OpenGL interop, metric scale, and orientation are confirmed on real hardware.
 
 ### Phase C — Left-Image Mask Editing
 
-- [ ] Add mask editing tools and a mask overlay to the frozen `1280×800` left image.
-- [ ] Map the mask to the `960×600` point-cloud grid with nearest-neighbor sampling.
-- [ ] Extract and highlight valid masked points in the 3D view.
-- [ ] Clear the old mask, final point cloud, and Mesh after retake.
+- [x] Add mask editing tools and a mask overlay to the frozen `1280×800` left image.
+- [x] Map the mask to the `960×600` point-cloud grid with nearest-neighbor sampling.
+- [x] Extract and highlight valid masked points in the 3D view.
+- [x] Clear the old mask, final point cloud, and Mesh after retake.
 
 **Gate C:** A selection in the left image matches the selected 3D points without visible scaling, padding, or vertical-flip errors.
 
 ### Phase D — Mesh Generation and Display
 
-- [ ] Generate triangle indices from the masked organized point cloud.
-- [ ] Add depth-discontinuity and maximum-edge-length rejection.
-- [ ] Calculate normals and add a Mesh rendering mode.
-- [ ] Regenerate the Mesh after mask changes.
-- [ ] Allow switching between point cloud, masked points, and Mesh views.
+- [x] Generate triangle indices from the masked organized point cloud.
+- [x] Add depth-discontinuity and maximum-edge-length rejection.
+- [x] Calculate normals and add a Mesh rendering mode.
+- [x] Regenerate the Mesh after mask changes.
+- [x] Allow switching between point cloud, masked points, and Mesh views.
 
 **Gate D:** The Mesh covers only the selected object region, does not bridge obvious depth discontinuities, and remains stable during 3D interaction.
 
 ### Phase E — Persistence, Stability, and UX
 
-- [ ] Save a reproducible final-capture package containing stereo images, calibration, disparity, mask, point cloud or Mesh, and metadata.
-- [ ] Add PLY or OBJ export if required by the final use case.
-- [ ] Handle camera disconnection, model loading failure, GPU out-of-memory errors, cancellation, and retry.
-- [ ] Test continuous preview, repeated final captures, and long-running stability.
-- [ ] Update `readme.md` with build, model placement, and runtime instructions.
+- [x] Save a reproducible final-capture package containing stereo images, calibration, disparity, mask, point cloud or Mesh, and metadata.
+- [x] Add PLY or OBJ export if required by the final use case.
+- [x] Handle camera disconnection, model loading failure, GPU out-of-memory errors, cancellation, and retry.
+- [x] Test continuous preview, repeated final captures, and long-running stability.
+- [x] Update `readme.md` with build, model placement, and runtime instructions.
 
 ## 8. Acceptance Criteria
 
