@@ -172,6 +172,7 @@ int main(int argc, char **argv) {
         cv::Mat mask;
         int mask_brush_radius = 4;
         bool mask_stroke_active = false;
+        float mesh_depth_threshold_cm = 1.F;
         cv::Point previous_mask_pixel;
         auto refreshMaskTexture = [&] {
             if (mask_source.empty() || mask.empty())
@@ -189,10 +190,16 @@ int main(int argc, char **argv) {
                 gpu_cloud.d_left_gray = displayed_frame->final_gpu_left_gray;
                 gpu_cloud.left_row_offset = displayed_frame->final_gpu_left_row_offset;
                 gpu_cloud.point_count = displayed_frame->final_gpu_point_count;
+                gpu_cloud.d_mesh_parent = displayed_frame->final_gpu_mesh_parent;
+                gpu_cloud.d_mesh_area = displayed_frame->final_gpu_mesh_area;
+                gpu_cloud.d_mesh_cell_area = displayed_frame->final_gpu_mesh_cell_area;
+                gpu_cloud.d_mesh_best_root = displayed_frame->final_gpu_mesh_best_root;
+                gpu_cloud.d_mesh_best_area_bits = displayed_frame->final_gpu_mesh_best_area_bits;
                 gpu_cloud.disparity.width = displayed_frame->final_disparity_width;
                 gpu_cloud.disparity.height = displayed_frame->final_disparity_height;
                 gpu_cloud.display_step = mask_step;
-                viewer.updateCudaFinal(gpu_cloud, mask.data, mask.cols, mask.rows);
+                gpu_cloud.mesh_depth_threshold_m = .01F * mesh_depth_threshold_cm;
+                viewer.updateCudaFinal(gpu_cloud, mask.data, mask.cols, mask.rows, true);
             }
         };
         while (!glfwWindowShouldClose(window)) {
@@ -240,6 +247,11 @@ int main(int argc, char **argv) {
                     gpu_cloud.d_left_gray = latest->final_gpu_left_gray;
                     gpu_cloud.left_row_offset = latest->final_gpu_left_row_offset;
                      gpu_cloud.point_count = latest->final_gpu_point_count;
+                    gpu_cloud.d_mesh_parent = latest->final_gpu_mesh_parent;
+                    gpu_cloud.d_mesh_area = latest->final_gpu_mesh_area;
+                    gpu_cloud.d_mesh_cell_area = latest->final_gpu_mesh_cell_area;
+                    gpu_cloud.d_mesh_best_root = latest->final_gpu_mesh_best_root;
+                    gpu_cloud.d_mesh_best_area_bits = latest->final_gpu_mesh_best_area_bits;
                      gpu_cloud.disparity.width = latest->final_disparity_width;
                     gpu_cloud.disparity.height = latest->final_disparity_height;
                     viewer.updateCudaFinal(gpu_cloud);
@@ -264,6 +276,8 @@ int main(int argc, char **argv) {
                 ImGui::SameLine();
                 ImGui::SetNextItemWidth(180.F);
                 ImGui::SliderInt("Brush radius", &mask_brush_radius, 1, 20, "%d px");
+                if (ImGui::SliderFloat("Depth threshold", &mesh_depth_threshold_cm, .1F, 10.F, "%.1f cm"))
+                    refreshMaskTexture();
                 if (!mask_texture.valid()) {
                     ImGui::TextUnformatted("No image available. Close and press Draw after a frame arrives.");
                 } else {
@@ -302,6 +316,8 @@ int main(int argc, char **argv) {
             }
             ImGui::Begin("Point Cloud");
             ImGui::Text("%d valid points", viewer.pointCount());
+            if (viewer.meshAreaM2() > 0.F)
+                ImGui::Text("Largest selected surface: %.1f cm²", viewer.meshAreaM2() * 10000.F);
             const ImVec2 panel_pos = ImGui::GetCursorScreenPos();
             const ImVec2 panel_size = ImGui::GetContentRegionAvail();
             ImGui::InvisibleButton("cloud_canvas", panel_size,

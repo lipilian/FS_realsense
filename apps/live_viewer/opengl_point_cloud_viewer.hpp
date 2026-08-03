@@ -22,11 +22,13 @@ class OpenGLPointCloudViewer {
 
     void update(const std::vector<float> &xyz, const std::vector<std::uint8_t> &rgb);
     void updateCudaFinal(const ffs_viewer::geometry::FinalCloudFrame &cloud,
-                         const std::uint8_t* host_mask = nullptr, int mask_width = 0, int mask_height = 0);
+                         const std::uint8_t* host_mask = nullptr, int mask_width = 0, int mask_height = 0,
+                         bool show_mesh = false);
     void resetToLeftCameraView();
     void setMaxDepth(float max_depth_m);
     void draw(ImDrawList *draw_list, const ImVec2 &screen_pos, const ImVec2 &size, float scale_x,
               float scale_y, float framebuffer_height);
+    float meshAreaM2() const noexcept { return mesh_area_m2_; }
     void interact(bool hovered, bool orbiting, bool panning, float delta_x, float delta_y, float wheel);
     int pointCount() const { return point_count_; }
 
@@ -56,11 +58,16 @@ class OpenGLPointCloudViewer {
     unsigned int xyz_vbo_ = 0;
     unsigned int rgb_vbo_ = 0;
     unsigned int cuda_vbo_ = 0;
+    unsigned int cuda_ebo_ = 0;
     void* cuda_resource_ = nullptr;
+    void* cuda_index_resource_ = nullptr;
     std::uint8_t* d_mask_ = nullptr;
     std::size_t mask_capacity_ = 0;
     bool use_cuda_vbo_ = false;
+    bool show_mesh_ = false;
+    int mesh_index_count_ = 0;
     int point_count_ = 0;
+    float mesh_area_m2_ = 0.F;
     float max_depth_m_ = 10.F;
     static constexpr float kCloudDepthOffsetM = 2.F;
     Camera camera_;

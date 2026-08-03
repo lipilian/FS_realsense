@@ -33,6 +33,11 @@ struct RenderFrame {
     const float* final_gpu_left_gray = nullptr;
     int final_gpu_left_row_offset = 0;
     int final_gpu_point_count = 0;
+    int* final_gpu_mesh_parent = nullptr;
+    float* final_gpu_mesh_cell_area = nullptr;
+    float* final_gpu_mesh_area = nullptr;
+    int* final_gpu_mesh_best_root = nullptr;
+    int* final_gpu_mesh_best_area_bits = nullptr;
     std::vector<float> xyz;
     std::vector<std::uint8_t> rgb;
 };

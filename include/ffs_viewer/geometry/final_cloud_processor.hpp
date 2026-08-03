@@ -20,9 +20,15 @@ struct FinalCloudFrame {
     int left_row_offset = 0;
     int point_count = 0;
     int display_step = 1;
+    float mesh_depth_threshold_m = .01F;
     const std::uint8_t* d_mask = nullptr;
     int mask_width = 0;
     int mask_height = 0;
+    int* d_mesh_parent = nullptr;
+    float* d_mesh_cell_area = nullptr;
+    float* d_mesh_area = nullptr;
+    int* d_mesh_best_root = nullptr;
+    int* d_mesh_best_area_bits = nullptr;
 };
 
 struct GpuPointVertex {
@@ -37,6 +43,12 @@ struct GpuPointVertex {
 
 void writeFinalCloudVertices(const FinalCloudFrame& cloud, GpuPointVertex* d_vertices,
                              cudaStream_t stream);
+int finalCloudMeshIndexCount(const FinalCloudFrame& cloud);
+void writeFinalCloudMeshIndices(const FinalCloudFrame& cloud, std::uint32_t* d_indices,
+                                cudaStream_t stream);
+// Finds connected, depth-continuous selected grid cells and returns the area
+// of the largest surface. Call this before writeFinalCloudMeshIndices().
+float finalCloudLargestMeshAreaM2(const FinalCloudFrame& cloud, cudaStream_t stream);
 
 // Owns reusable GPU buffers for final-capture geometry. The TensorRT disparity
 // buffer remains on GPU until invisible filtering, projection, and denoising

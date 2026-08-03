@@ -15,14 +15,17 @@ OpenGLPointCloudViewer::OpenGLPointCloudViewer() {
     glGenBuffers(1, &xyz_vbo_);
     glGenBuffers(1, &rgb_vbo_);
     glGenBuffers(1, &cuda_vbo_);
+    glGenBuffers(1, &cuda_ebo_);
 }
 
 OpenGLPointCloudViewer::~OpenGLPointCloudViewer() noexcept {
     if (cuda_resource_ != nullptr) cudaGraphicsUnregisterResource(static_cast<cudaGraphicsResource*>(cuda_resource_));
     if (d_mask_ != nullptr) cudaFree(d_mask_);
+    if (cuda_index_resource_ != nullptr) cudaGraphicsUnregisterResource(static_cast<cudaGraphicsResource*>(cuda_index_resource_));
     glDeleteBuffers(1, &xyz_vbo_);
     glDeleteBuffers(1, &rgb_vbo_);
     glDeleteBuffers(1, &cuda_vbo_);
+    glDeleteBuffers(1, &cuda_ebo_);
 }
 
 
@@ -36,10 +39,13 @@ void OpenGLPointCloudViewer::update(const std::vector<float> &xyz,
     point_count_ = int(xyz.size() / 3);
     use_cuda_vbo_ = false;
 
+    show_mesh_ = false;
+    mesh_index_count_ = 0;
+    mesh_area_m2_ = 0.F;
 }
 
 void OpenGLPointCloudViewer::updateCudaFinal(const ffs_viewer::geometry::FinalCloudFrame &cloud,
-                                                   const std::uint8_t* host_mask, int mask_width, int mask_height) {
+                                                   const std::uint8_t* host_mask, int mask_width, int mask_height, bool show_mesh) {
     if (cloud.point_count <= 0) return;
     auto display_cloud = cloud;
     if (host_mask != nullptr && mask_width > 0 && mask_height > 0) {
@@ -78,6 +84,26 @@ void OpenGLPointCloudViewer::updateCudaFinal(const ffs_viewer::geometry::FinalCl
         static_cast<ffs_viewer::geometry::GpuPointVertex*>(device_vertices), 0);
     if (cudaStreamSynchronize(0) != cudaSuccess || cudaGraphicsUnmapResources(1, &resource, 0) != cudaSuccess)
         throw std::runtime_error("CUDA failed to finalize final-cloud OpenGL VBO");
+    show_mesh_ = show_mesh && display_cloud.d_mask != nullptr;
+    mesh_index_count_ = show_mesh_ ? ffs_viewer::geometry::finalCloudMeshIndexCount(display_cloud) : 0;
+    mesh_area_m2_ = show_mesh_ ? ffs_viewer::geometry::finalCloudLargestMeshAreaM2(display_cloud, 0) : 0.F;
+    show_mesh_ = show_mesh_ && mesh_area_m2_ > 0.F;
+    if (show_mesh_ && mesh_index_count_ > 0) {
+        if (cuda_index_resource_ != nullptr) { cudaGraphicsUnregisterResource(static_cast<cudaGraphicsResource*>(cuda_index_resource_)); cuda_index_resource_ = nullptr; }
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, cuda_ebo_);
+        glBufferData(GL_ELEMENT_ARRAY_BUFFER, GLsizeiptr(mesh_index_count_) * sizeof(std::uint32_t), nullptr, GL_DYNAMIC_DRAW);
+        cudaGraphicsResource* index_resource = nullptr;
+        if (cudaGraphicsGLRegisterBuffer(&index_resource, cuda_ebo_, cudaGraphicsRegisterFlagsWriteDiscard) != cudaSuccess ||
+            cudaGraphicsMapResources(1, &index_resource, 0) != cudaSuccess)
+            throw std::runtime_error("CUDA failed to map final-cloud mesh index buffer");
+        cuda_index_resource_ = index_resource;
+        void* device_indices = nullptr; std::size_t index_bytes = 0;
+        if (cudaGraphicsResourceGetMappedPointer(&device_indices, &index_bytes, index_resource) != cudaSuccess)
+            throw std::runtime_error("CUDA failed to access final-cloud mesh index buffer");
+        ffs_viewer::geometry::writeFinalCloudMeshIndices(display_cloud, static_cast<std::uint32_t*>(device_indices), 0);
+        if (cudaStreamSynchronize(0) != cudaSuccess || cudaGraphicsUnmapResources(1, &index_resource, 0) != cudaSuccess)
+            throw std::runtime_error("CUDA failed to finalize final-cloud mesh index buffer");
+    }
     point_count_ = display_cloud.point_count;
     use_cuda_vbo_ = true;
 }
@@ -174,6 +200,14 @@ void OpenGLPointCloudViewer::render(const DrawRequest &request) const {
         glVertexPointer(3, GL_FLOAT, 0, nullptr);
         glBindBuffer(GL_ARRAY_BUFFER, rgb_vbo_);
         glColorPointer(3, GL_UNSIGNED_BYTE, 0, nullptr);
+    }
+    if (use_cuda_vbo_ && show_mesh_ && mesh_index_count_ > 0) {
+        glBindBuffer(GL_ARRAY_BUFFER, cuda_vbo_);
+        glVertexPointer(3, GL_FLOAT, sizeof(ffs_viewer::geometry::GpuPointVertex), nullptr);
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, cuda_ebo_);
+        glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+        glDrawElements(GL_TRIANGLES, mesh_index_count_, GL_UNSIGNED_INT, nullptr);
+        glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
     }
     glDrawArrays(GL_POINTS, 0, point_count_);
     glDisableClientState(GL_COLOR_ARRAY);

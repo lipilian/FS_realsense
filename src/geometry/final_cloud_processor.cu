@@ -116,6 +116,24 @@ __global__ void writeVerticesKernel(const float* xyz, const std::uint8_t* valid,
 }
 
 
+__device__ bool meshMasked(const std::uint8_t* mask, int mask_width, int mask_height,
+                           int x, int y, int image_width, int image_height) {
+    return mask != nullptr && mask[min(mask_height - 1, y * mask_height / image_height) * mask_width +
+                                   min(mask_width - 1, x * mask_width / image_width)] != 0;
+}
+
+__device__ float triangleArea(const float* p, int a, int b, int c) { const float abx=p[3*b]-p[3*a], aby=p[3*b+1]-p[3*a+1], abz=p[3*b+2]-p[3*a+2], acx=p[3*c]-p[3*a], acy=p[3*c+1]-p[3*a+1], acz=p[3*c+2]-p[3*a+2]; const float x=aby*acz-abz*acy, y=abz*acx-abx*acz, z=abx*acy-aby*acx; return .5F*sqrtf(x*x+y*y+z*z); }
+__global__ void initializeMeshKernel(const float* xyz, const std::uint8_t* valid, const std::uint8_t* mask, int mw, int mh, int w, int h, int step, float depth_threshold_m, int* parent, float* areas, int cells_x, int cells) {
+    const int cell=blockIdx.x*blockDim.x+threadIdx.x; if(cell>=cells) return; const int x=(cell%cells_x)*step, y=(cell/cells_x)*step, a=y*w+x, b=a+step, c=a+step*w, d=c+step;
+    const bool selected=meshMasked(mask,mw,mh,x,y,w,h)&&meshMasked(mask,mw,mh,x+step,y,w,h)&&meshMasked(mask,mw,mh,x,y+step,w,h)&&meshMasked(mask,mw,mh,x+step,y+step,w,h);
+    const float za=xyz[3*a+2], zb=xyz[3*b+2], zc=xyz[3*c+2], zd=xyz[3*d+2]; const bool keep=selected&&valid[a]&&valid[b]&&valid[c]&&valid[d]&&fmaxf(fmaxf(za,zb),fmaxf(zc,zd))-fminf(fminf(za,zb),fminf(zc,zd))<=depth_threshold_m;
+    parent[cell]=keep?cell:-1; areas[cell]=keep?triangleArea(xyz,a,b,c)+triangleArea(xyz,b,d,c):0.F;
+}
+__global__ void propagateMeshLabelsKernel(int* parent, int cells_x, int cells_y, int cells) { const int i=blockIdx.x*blockDim.x+threadIdx.x; if(i>=cells||parent[i]<0)return; int p=parent[i],x=i%cells_x,y=i/cells_x; if(x&&parent[i-1]>=0)p=min(p,parent[i-1]); if(x+1<cells_x&&parent[i+1]>=0)p=min(p,parent[i+1]); if(y&&parent[i-cells_x]>=0)p=min(p,parent[i-cells_x]); if(y+1<cells_y&&parent[i+cells_x]>=0)p=min(p,parent[i+cells_x]); parent[i]=p; }
+__global__ void accumulateMeshAreasKernel(const int* parent,const float* cells_area,float* component_area,int cells) { const int i=blockIdx.x*blockDim.x+threadIdx.x; if(i<cells&&parent[i]>=0)atomicAdd(component_area+parent[i],cells_area[i]); }
+__global__ void findLargestMeshKernel(const int* parent,const float* area,int* root,int* best,int cells) { const int i=blockIdx.x*blockDim.x+threadIdx.x; if(i>=cells||parent[i]!=i)return; const int bits=__float_as_int(area[i]); if(bits>atomicMax(best,bits))atomicExch(root,i); }
+__global__ void writeMeshIndicesKernel(const int* parent,const int* root,int w,int step,std::uint32_t* indices,int cells_x,int cells) { const int i=blockIdx.x*blockDim.x+threadIdx.x; if(i>=cells)return; const int x=(i%cells_x)*step,y=(i/cells_x)*step,a=y*w+x,b=a+step,c=a+step*w,d=c+step,o=6*i; if(parent[i]>=0&&parent[i]==*root){indices[o]=a;indices[o+1]=b;indices[o+2]=c;indices[o+3]=b;indices[o+4]=d;indices[o+5]=c;}else{indices[o]=indices[o+1]=indices[o+2]=indices[o+3]=indices[o+4]=indices[o+5]=0;} }
+
 struct FinalCloudProcessor::Impl {
     int width, height, count;
     float* d_xyz = nullptr;
@@ -130,6 +148,11 @@ struct FinalCloudProcessor::Impl {
     void* d_sort_temp = nullptr;
     std::size_t select_bytes = 0, sort_bytes = 0;
     int* d_active_count = nullptr;
+    int* d_mesh_parent = nullptr;
+    float* d_mesh_area = nullptr;
+    float* d_mesh_cell_area = nullptr;
+    int* d_mesh_best_root = nullptr;
+    int* d_mesh_best_area_bits = nullptr;
 
     Impl(int w, int h) : width(w), height(h), count(w * h) {
         check(cudaMalloc(&d_xyz, 3ULL * count * sizeof(float)), "allocate final XYZ");
@@ -141,13 +164,18 @@ struct FinalCloudProcessor::Impl {
         check(cudaMalloc(&d_keys_in, count * sizeof(std::uint64_t)), "allocate hash keys");
         check(cudaMalloc(&d_keys_out, count * sizeof(std::uint64_t)), "allocate sorted hash keys");
         check(cudaMalloc(&d_active_count, sizeof(int)), "allocate active count");
+        check(cudaMalloc(&d_mesh_parent, (width - 1) * (height - 1) * sizeof(int)), "allocate mesh parents");
+        check(cudaMalloc(&d_mesh_area, (width - 1) * (height - 1) * sizeof(float)), "allocate mesh areas");
+        check(cudaMalloc(&d_mesh_cell_area, (width - 1) * (height - 1) * sizeof(float)), "allocate mesh cell areas");
+        check(cudaMalloc(&d_mesh_best_root, sizeof(int)), "allocate mesh best root");
+        check(cudaMalloc(&d_mesh_best_area_bits, sizeof(int)), "allocate mesh best area");
         check(cub::DeviceSelect::Flagged(nullptr, select_bytes, d_indices, d_valid, d_active, d_active_count, count), "query CUB select");
         check(cudaMalloc(&d_select_temp, select_bytes), "allocate CUB select workspace");
         check(cub::DeviceRadixSort::SortPairs(nullptr, sort_bytes, d_keys_in, d_keys_out, d_ids_in, d_ids_out, count), "query CUB sort");
         check(cudaMalloc(&d_sort_temp, sort_bytes), "allocate CUB sort workspace");
     }
     ~Impl() {
-        cudaFree(d_sort_temp); cudaFree(d_select_temp); cudaFree(d_active_count); cudaFree(d_keys_out); cudaFree(d_keys_in);
+        cudaFree(d_sort_temp); cudaFree(d_select_temp); cudaFree(d_mesh_best_area_bits); cudaFree(d_mesh_best_root); cudaFree(d_mesh_area); cudaFree(d_mesh_cell_area); cudaFree(d_mesh_parent); cudaFree(d_active_count); cudaFree(d_keys_out); cudaFree(d_keys_in);
         cudaFree(d_ids_out); cudaFree(d_ids_in); cudaFree(d_active); cudaFree(d_indices); cudaFree(d_valid); cudaFree(d_xyz);
     }
 };
@@ -195,6 +223,11 @@ FinalCloudFrame FinalCloudProcessor::process(float* d_disparity, const float* d_
     result.d_left_gray = d_left_input;
     result.left_row_offset = 4 * impl_->width;
     result.point_count = impl_->count;
+    result.d_mesh_cell_area = impl_->d_mesh_cell_area;
+    result.d_mesh_parent = impl_->d_mesh_parent;
+    result.d_mesh_area = impl_->d_mesh_area;
+    result.d_mesh_best_root = impl_->d_mesh_best_root;
+    result.d_mesh_best_area_bits = impl_->d_mesh_best_area_bits;
     return result;
 }
 
@@ -210,4 +243,42 @@ void writeFinalCloudVertices(const FinalCloudFrame& cloud, GpuPointVertex* d_ver
     check(cudaGetLastError(), "launch OpenGL vertex write");
 }
 
+int finalCloudMeshIndexCount(const FinalCloudFrame& cloud) {
+    if (cloud.display_step <= 0 || cloud.disparity.width <= 0 || cloud.disparity.height <= 0) return 0;
+    return 6 * ((cloud.disparity.width - 1) / cloud.display_step) *
+               ((cloud.disparity.height - 1) / cloud.display_step);
+}
+
+void writeFinalCloudMeshIndices(const FinalCloudFrame& cloud, std::uint32_t* d_indices,
+                                cudaStream_t stream) {
+    const int count = finalCloudMeshIndexCount(cloud);
+    if (count <= 0 || d_indices == nullptr || cloud.d_mesh_parent == nullptr || cloud.d_mesh_best_root == nullptr) return;
+    const int cells_x = (cloud.disparity.width - 1) / cloud.display_step;
+    const int cells = count / 6;
+    writeMeshIndicesKernel<<<(cells + 255) / 256, 256, 0, stream>>>(cloud.d_mesh_parent, cloud.d_mesh_best_root,
+        cloud.disparity.width, cloud.display_step, d_indices, cells_x, cells);
+    check(cudaGetLastError(), "launch final-cloud mesh index write");
+}
+
+
+float finalCloudLargestMeshAreaM2(const FinalCloudFrame& cloud, cudaStream_t stream) {
+    const int count = finalCloudMeshIndexCount(cloud);
+    if (count <= 0 || !cloud.d_xyz || !cloud.d_valid || !cloud.d_mask || !cloud.d_mesh_parent || !cloud.d_mesh_cell_area || !cloud.d_mesh_area || !cloud.d_mesh_best_root || !cloud.d_mesh_best_area_bits) return 0.F;
+    const int cells_x = (cloud.disparity.width - 1) / cloud.display_step, cells_y = (cloud.disparity.height - 1) / cloud.display_step, cells = count / 6, blocks = (cells + 255) / 256;
+    initializeMeshKernel<<<blocks, 256, 0, stream>>>(cloud.d_xyz, cloud.d_valid, cloud.d_mask, cloud.mask_width, cloud.mask_height, cloud.disparity.width, cloud.disparity.height, cloud.display_step, cloud.mesh_depth_threshold_m, cloud.d_mesh_parent, cloud.d_mesh_cell_area, cells_x, cells);
+    check(cudaGetLastError(), "initialize final-cloud mesh");
+    for (int i = 0; i < cells_x + cells_y - 2; ++i) propagateMeshLabelsKernel<<<blocks, 256, 0, stream>>>(cloud.d_mesh_parent, cells_x, cells_y, cells);
+    check(cudaGetLastError(), "connect final-cloud mesh");
+    check(cudaMemsetAsync(cloud.d_mesh_area, 0, std::size_t(cells) * sizeof(float), stream), "clear mesh areas");
+    accumulateMeshAreasKernel<<<blocks, 256, 0, stream>>>(cloud.d_mesh_parent, cloud.d_mesh_cell_area, cloud.d_mesh_area, cells);
+    check(cudaGetLastError(), "accumulate final-cloud mesh areas");
+    check(cudaMemsetAsync(cloud.d_mesh_best_root, 0xff, sizeof(int), stream), "clear mesh best root");
+    check(cudaMemsetAsync(cloud.d_mesh_best_area_bits, 0, sizeof(int), stream), "clear mesh best area");
+    findLargestMeshKernel<<<blocks, 256, 0, stream>>>(cloud.d_mesh_parent, cloud.d_mesh_area, cloud.d_mesh_best_root, cloud.d_mesh_best_area_bits, cells);
+    check(cudaGetLastError(), "find largest final-cloud mesh");
+    float area_m2 = 0.F;
+    check(cudaMemcpyAsync(&area_m2, cloud.d_mesh_best_area_bits, sizeof(area_m2), cudaMemcpyDeviceToHost, stream), "copy largest mesh area");
+    check(cudaStreamSynchronize(stream), "synchronize largest mesh area");
+    return area_m2;
+}
 }  // namespace ffs_viewer::geometry
