@@ -19,6 +19,10 @@ struct FinalCloudFrame {
     const float* d_left_gray = nullptr;
     int left_row_offset = 0;
     int point_count = 0;
+    int display_step = 1;
+    const std::uint8_t* d_mask = nullptr;
+    int mask_width = 0;
+    int mask_height = 0;
 };
 
 struct GpuPointVertex {

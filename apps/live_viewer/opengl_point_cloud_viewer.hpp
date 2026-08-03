@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <vector>
 
@@ -20,7 +21,9 @@ class OpenGLPointCloudViewer {
     OpenGLPointCloudViewer &operator=(const OpenGLPointCloudViewer &) = delete;
 
     void update(const std::vector<float> &xyz, const std::vector<std::uint8_t> &rgb);
-    void updateCudaFinal(const ffs_viewer::geometry::FinalCloudFrame &cloud);
+    void updateCudaFinal(const ffs_viewer::geometry::FinalCloudFrame &cloud,
+                         const std::uint8_t* host_mask = nullptr, int mask_width = 0, int mask_height = 0);
+    void resetToLeftCameraView();
     void setMaxDepth(float max_depth_m);
     void draw(ImDrawList *draw_list, const ImVec2 &screen_pos, const ImVec2 &size, float scale_x,
               float scale_y, float framebuffer_height);
@@ -29,9 +32,9 @@ class OpenGLPointCloudViewer {
 
   private:
     struct Camera {
-        float yaw = 20.F;
-        float pitch = -15.F;
-        float distance = .5F;
+        float yaw = 0.F;
+        float pitch = 0.F;
+        float distance = -1.5F;
         float pan_x = 0.F;
         float pan_y = 0.F;
     };
@@ -54,6 +57,8 @@ class OpenGLPointCloudViewer {
     unsigned int rgb_vbo_ = 0;
     unsigned int cuda_vbo_ = 0;
     void* cuda_resource_ = nullptr;
+    std::uint8_t* d_mask_ = nullptr;
+    std::size_t mask_capacity_ = 0;
     bool use_cuda_vbo_ = false;
     int point_count_ = 0;
     float max_depth_m_ = 10.F;

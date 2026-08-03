@@ -98,13 +98,21 @@ __global__ void radiusDenoiseKernel(const std::uint64_t* keys, const int* ids, i
 
 }  // namespace
 __global__ void writeVerticesKernel(const float* xyz, const std::uint8_t* valid, const float* left_gray,
-                                    int left_row_offset, GpuPointVertex* vertices, int count) {
+                                    int left_row_offset, int display_step, int image_width, int image_height, const std::uint8_t* mask,
+                                    int mask_width, int mask_height, GpuPointVertex* vertices, int count) {
     const int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= count) return;
-    const bool keep = valid[i] != 0;
+    const int x = i % image_width;
+    const int y = i / image_width;
+    const bool selected = display_step <= 1 || (x % display_step == 0 && y % display_step == 0);
+    const bool keep = valid[i] != 0 && selected;
+    const bool masked = mask != nullptr && mask[
+        min(mask_height - 1, y * mask_height / image_height) * mask_width +
+        min(mask_width - 1, x * mask_width / image_width)] != 0;
     const auto gray = static_cast<std::uint8_t>(fminf(255.0F, fmaxf(0.0F, left_gray[i + left_row_offset])));
     vertices[i] = {xyz[3 * i], xyz[3 * i + 1], keep ? xyz[3 * i + 2] : 100.0F,
-                   gray, gray, gray, 255};
+                   masked ? std::uint8_t(0) : gray, masked ? std::uint8_t(255) : gray,
+                   masked ? std::uint8_t(0) : gray, 255};
 }
 
 
@@ -192,11 +200,13 @@ FinalCloudFrame FinalCloudProcessor::process(float* d_disparity, const float* d_
 
 void writeFinalCloudVertices(const FinalCloudFrame& cloud, GpuPointVertex* d_vertices,
                              cudaStream_t stream) {
-    if (cloud.d_xyz == nullptr || cloud.d_valid == nullptr || cloud.d_left_gray == nullptr || d_vertices == nullptr || cloud.point_count <= 0) {
+    if (cloud.d_xyz == nullptr || cloud.d_valid == nullptr || cloud.d_left_gray == nullptr || d_vertices == nullptr || cloud.point_count <= 0 || cloud.disparity.width <= 0) {
         throw std::invalid_argument("invalid GPU final-cloud vertex target");
     }
     const int blocks = (cloud.point_count + 255) / 256;
-    writeVerticesKernel<<<blocks, 256, 0, stream>>>(cloud.d_xyz, cloud.d_valid, cloud.d_left_gray, cloud.left_row_offset, d_vertices, cloud.point_count);
+    writeVerticesKernel<<<blocks, 256, 0, stream>>>(cloud.d_xyz, cloud.d_valid, cloud.d_left_gray,
+                                                     cloud.left_row_offset, cloud.display_step, cloud.disparity.width, cloud.disparity.height,
+                                                     cloud.d_mask, cloud.mask_width, cloud.mask_height, d_vertices, cloud.point_count);
     check(cudaGetLastError(), "launch OpenGL vertex write");
 }
 

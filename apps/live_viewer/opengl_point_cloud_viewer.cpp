@@ -19,6 +19,7 @@ OpenGLPointCloudViewer::OpenGLPointCloudViewer() {
 
 OpenGLPointCloudViewer::~OpenGLPointCloudViewer() noexcept {
     if (cuda_resource_ != nullptr) cudaGraphicsUnregisterResource(static_cast<cudaGraphicsResource*>(cuda_resource_));
+    if (d_mask_ != nullptr) cudaFree(d_mask_);
     glDeleteBuffers(1, &xyz_vbo_);
     glDeleteBuffers(1, &rgb_vbo_);
     glDeleteBuffers(1, &cuda_vbo_);
@@ -37,14 +38,30 @@ void OpenGLPointCloudViewer::update(const std::vector<float> &xyz,
 
 }
 
-void OpenGLPointCloudViewer::updateCudaFinal(const ffs_viewer::geometry::FinalCloudFrame &cloud) {
+void OpenGLPointCloudViewer::updateCudaFinal(const ffs_viewer::geometry::FinalCloudFrame &cloud,
+                                                   const std::uint8_t* host_mask, int mask_width, int mask_height) {
     if (cloud.point_count <= 0) return;
+    auto display_cloud = cloud;
+    if (host_mask != nullptr && mask_width > 0 && mask_height > 0) {
+        const std::size_t bytes = std::size_t(mask_width) * std::size_t(mask_height);
+        if (mask_capacity_ < bytes) {
+            if (d_mask_ != nullptr) cudaFree(d_mask_);
+            if (cudaMalloc(reinterpret_cast<void**>(&d_mask_), bytes) != cudaSuccess)
+                throw std::runtime_error("CUDA failed to allocate final-cloud mask");
+            mask_capacity_ = bytes;
+        }
+        if (cudaMemcpyAsync(d_mask_, host_mask, bytes, cudaMemcpyHostToDevice, 0) != cudaSuccess)
+            throw std::runtime_error("CUDA failed to upload final-cloud mask");
+        display_cloud.d_mask = d_mask_;
+        display_cloud.mask_width = mask_width;
+        display_cloud.mask_height = mask_height;
+    }
     if (cuda_resource_ != nullptr) {
         cudaGraphicsUnregisterResource(static_cast<cudaGraphicsResource*>(cuda_resource_));
         cuda_resource_ = nullptr;
     }
     glBindBuffer(GL_ARRAY_BUFFER, cuda_vbo_);
-    glBufferData(GL_ARRAY_BUFFER, GLsizeiptr(cloud.point_count) * sizeof(ffs_viewer::geometry::GpuPointVertex),
+    glBufferData(GL_ARRAY_BUFFER, GLsizeiptr(display_cloud.point_count) * sizeof(ffs_viewer::geometry::GpuPointVertex),
                  nullptr, GL_DYNAMIC_DRAW);
     cudaGraphicsResource* resource = nullptr;
     if (cudaGraphicsGLRegisterBuffer(&resource, cuda_vbo_, cudaGraphicsRegisterFlagsWriteDiscard) != cudaSuccess)
@@ -55,14 +72,21 @@ void OpenGLPointCloudViewer::updateCudaFinal(const ffs_viewer::geometry::FinalCl
     void* device_vertices = nullptr;
     std::size_t bytes = 0;
     if (cudaGraphicsResourceGetMappedPointer(&device_vertices, &bytes, resource) != cudaSuccess ||
-        bytes < std::size_t(cloud.point_count) * sizeof(ffs_viewer::geometry::GpuPointVertex))
+        bytes < std::size_t(display_cloud.point_count) * sizeof(ffs_viewer::geometry::GpuPointVertex))
         throw std::runtime_error("CUDA final-cloud OpenGL VBO has unexpected size");
-    ffs_viewer::geometry::writeFinalCloudVertices(cloud,
+    ffs_viewer::geometry::writeFinalCloudVertices(display_cloud,
         static_cast<ffs_viewer::geometry::GpuPointVertex*>(device_vertices), 0);
     if (cudaStreamSynchronize(0) != cudaSuccess || cudaGraphicsUnmapResources(1, &resource, 0) != cudaSuccess)
         throw std::runtime_error("CUDA failed to finalize final-cloud OpenGL VBO");
-    point_count_ = cloud.point_count;
+    point_count_ = display_cloud.point_count;
     use_cuda_vbo_ = true;
+}
+
+void OpenGLPointCloudViewer::resetToLeftCameraView() {
+    camera_.yaw = 0.F;
+    camera_.pitch = 0.F;
+    camera_.pan_x = 0.F;
+    camera_.pan_y = 0.F;
 }
 
 void OpenGLPointCloudViewer::setMaxDepth(float max_depth_m) {

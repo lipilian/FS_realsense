@@ -158,10 +158,43 @@ int main(int argc, char **argv) {
         ImageTexture left_texture;
         ImageTexture right_texture;
         ImageTexture disparity_texture;
+        ImageTexture mask_texture;
         ffs_viewer::live::LivePipeline pipeline(
             {options.engine_dir, options.fs_engine_dir, options.point_step, options.max_depth_m});
         viewer.setMaxDepth(options.max_depth_m);
         std::shared_ptr<const ffs_viewer::live::RenderFrame> displayed_frame;
+        int point_step_selection = options.point_step == 1 ? 0 : options.point_step == 2 ? 1 :
+                                   options.point_step == 8 ? 3 : 2;
+        constexpr int point_step_values[] = {1, 2, 4, 8};
+        bool show_mask_editor = false;
+        int mask_step = 4;
+        cv::Mat mask_source;
+        cv::Mat mask;
+        int mask_brush_radius = 4;
+        bool mask_stroke_active = false;
+        cv::Point previous_mask_pixel;
+        auto refreshMaskTexture = [&] {
+            if (mask_source.empty() || mask.empty())
+                return;
+            cv::Mat overlay = mask_source.clone();
+            cv::Mat green(mask_source.size(), mask_source.type(), cv::Scalar(0, 255, 0));
+            green.copyTo(overlay, mask);
+            cv::Mat blended;
+            cv::addWeighted(mask_source, .8, overlay, .2, 0.0, blended);
+            mask_texture.upload(blended);
+            if (displayed_frame && displayed_frame->final_gpu_point_count > 0) {
+                ffs_viewer::geometry::FinalCloudFrame gpu_cloud;
+                gpu_cloud.d_xyz = displayed_frame->final_gpu_xyz;
+                gpu_cloud.d_valid = displayed_frame->final_gpu_valid;
+                gpu_cloud.d_left_gray = displayed_frame->final_gpu_left_gray;
+                gpu_cloud.left_row_offset = displayed_frame->final_gpu_left_row_offset;
+                gpu_cloud.point_count = displayed_frame->final_gpu_point_count;
+                gpu_cloud.disparity.width = displayed_frame->final_disparity_width;
+                gpu_cloud.disparity.height = displayed_frame->final_disparity_height;
+                gpu_cloud.display_step = mask_step;
+                viewer.updateCudaFinal(gpu_cloud, mask.data, mask.cols, mask.rows);
+            }
+        };
         while (!glfwWindowShouldClose(window)) {
             glfwPollEvents();
             ImGui_ImplOpenGL3_NewFrame();
@@ -181,18 +214,34 @@ int main(int argc, char **argv) {
             if (ImGui::Button("Quit"))
                 glfwSetWindowShouldClose(window, GLFW_TRUE);
             ImGui::Separator();
-            ImGui::Text("Point step: %d   Max depth: %.2f m", options.point_step, options.max_depth_m);
+            ImGui::Text("Max depth: %.2f m", options.max_depth_m);
+            ImGui::NewLine();
+            ImGui::SetNextItemWidth(120.F);
+            ImGui::Combo("Point step", &point_step_selection, "1\0" "2\0" "4\0" "8\0");
+            ImGui::SameLine();
+            if (ImGui::Button("Draw") && displayed_frame && !displayed_frame->left.empty()) {
+                mask_step = point_step_values[point_step_selection];
+                const cv::Size mask_size(std::max(1, displayed_frame->left.cols / mask_step),
+                                         std::max(1, displayed_frame->left.rows / mask_step));
+                cv::resize(displayed_frame->left, mask_source, mask_size, 0.0, 0.0, cv::INTER_AREA);
+                mask = cv::Mat::zeros(mask_source.size(), CV_8UC1);
+                refreshMaskTexture();
+                show_mask_editor = true;
+            }
             ImGui::End();
 
             const auto latest = pipeline.latestFrame();
             if (latest && latest != displayed_frame) {
                 if (latest->final_gpu_point_count > 0) {
+                    viewer.resetToLeftCameraView();
                     ffs_viewer::geometry::FinalCloudFrame gpu_cloud;
                     gpu_cloud.d_xyz = latest->final_gpu_xyz;
                     gpu_cloud.d_valid = latest->final_gpu_valid;
                     gpu_cloud.d_left_gray = latest->final_gpu_left_gray;
                     gpu_cloud.left_row_offset = latest->final_gpu_left_row_offset;
-                    gpu_cloud.point_count = latest->final_gpu_point_count;
+                     gpu_cloud.point_count = latest->final_gpu_point_count;
+                     gpu_cloud.disparity.width = latest->final_disparity_width;
+                    gpu_cloud.disparity.height = latest->final_disparity_height;
                     viewer.updateCudaFinal(gpu_cloud);
                 } else {
                     viewer.update(latest->xyz, latest->rgb);
@@ -204,6 +253,53 @@ int main(int argc, char **argv) {
             }
             showStereoPanel(left_texture, right_texture);
             showImagePanel("Disparity", disparity_texture);
+            if (show_mask_editor) {
+                ImGui::Begin("Mask Editor", &show_mask_editor);
+                ImGui::Text("Frozen left image, downsampled by step %d", mask_step);
+                ImGui::SameLine();
+                if (ImGui::Button("Clear mask")) {
+                    mask.setTo(0);
+                    refreshMaskTexture();
+                }
+                ImGui::SameLine();
+                ImGui::SetNextItemWidth(180.F);
+                ImGui::SliderInt("Brush radius", &mask_brush_radius, 1, 20, "%d px");
+                if (!mask_texture.valid()) {
+                    ImGui::TextUnformatted("No image available. Close and press Draw after a frame arrives.");
+                } else {
+                    const ImVec2 available = ImGui::GetContentRegionAvail();
+                    const float scale = std::min(available.x / float(mask_texture.width()),
+                                                 available.y / float(mask_texture.height()));
+                    const ImVec2 image_size(float(mask_texture.width()) * scale,
+                                             float(mask_texture.height()) * scale);
+                    const ImVec2 image_pos = ImGui::GetCursorScreenPos();
+                    ImGui::Image(mask_texture.texture(), image_size);
+                    ImGui::SetCursorScreenPos(image_pos);
+                    ImGui::InvisibleButton("mask_canvas", image_size,
+                                           ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonRight);
+                    const bool image_hovered = ImGui::IsItemHovered();
+                    const bool paint = image_hovered && ImGui::IsMouseDown(ImGuiMouseButton_Left);
+                    const bool erase = image_hovered && ImGui::IsMouseDown(ImGuiMouseButton_Right);
+                    if (paint || erase) {
+                        const ImVec2 mouse = ImGui::GetMousePos();
+                        const cv::Point pixel(
+                            std::clamp(int((mouse.x - image_pos.x) / image_size.x * mask.cols), 0, mask.cols - 1),
+                            std::clamp(int((mouse.y - image_pos.y) / image_size.y * mask.rows), 0, mask.rows - 1));
+                        const cv::Scalar value = erase ? cv::Scalar(0) : cv::Scalar(255);
+                        if (mask_stroke_active)
+                            cv::line(mask, previous_mask_pixel, pixel, value, 2 * mask_brush_radius + 1,
+                                     cv::LINE_8);
+                        else
+                            cv::circle(mask, pixel, mask_brush_radius, value, cv::FILLED, cv::LINE_8);
+                        previous_mask_pixel = pixel;
+                        mask_stroke_active = true;
+                        refreshMaskTexture();
+                    } else {
+                        mask_stroke_active = false;
+                    }
+                }
+                ImGui::End();
+            }
             ImGui::Begin("Point Cloud");
             ImGui::Text("%d valid points", viewer.pointCount());
             const ImVec2 panel_pos = ImGui::GetCursorScreenPos();
