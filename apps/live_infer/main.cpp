@@ -176,7 +176,7 @@ int main(int argc, char** argv) {
                   << " stale_dropped=" << source.droppedPairs() << "\n";
         return EXIT_SUCCESS;
     } catch (const std::exception& error) {
-        std::cerr << "ffs_live_infer: " << error.what() << '\n';
+        std::cerr << "live_infer: " << error.what() << '\n';
         return EXIT_FAILURE;
     }
 }

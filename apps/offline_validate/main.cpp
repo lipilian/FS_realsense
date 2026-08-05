@@ -541,7 +541,7 @@ int main(int argc, char** argv) {
                   << ", synchronization_mismatches: " << mismatched_pairs << "\n";
         return mismatched_pairs == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
     } catch (const std::exception& error) {
-        std::cerr << "ffs_offline_validate: " << error.what() << '\n';
+        std::cerr << "offline_validate: " << error.what() << '\n';
         return EXIT_FAILURE;
     }
 }

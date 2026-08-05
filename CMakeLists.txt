@@ -9,7 +9,7 @@ if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
       "CUDA architectures" FORCE)
 endif()
 
-project(ffs_viewer VERSION 0.1.0 LANGUAGES CXX)
+project(ffs_viewer VERSION 0.1.0 LANGUAGES CXX CUDA)
 
 include(CTest)
 include(GNUInstallDirs)
@@ -25,7 +25,7 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 option(FFS_VIEWER_BUILD_OFFLINE_VALIDATE
        "Build the DB3-based offline validation executable" ON)
 option(FFS_VIEWER_BUILD_SENTECH_DUAL_CONNECT
-       "Build the minimal two-camera Sentech connection test" ON)
+       "Build the Sentech dual-camera ImGui viewer" ON)
 option(FFS_VIEWER_WARNINGS_AS_ERRORS
        "Treat C++ warnings in this project as errors" OFF)
 
@@ -40,17 +40,13 @@ set(FFS_VIEWER_DEFAULT_CONFIG
     "${CMAKE_CURRENT_SOURCE_DIR}/config/offline_validate.yaml" CACHE FILEPATH
     "Default offline-validation configuration file")
 
+find_package(CUDAToolkit REQUIRED)
 find_package(Threads REQUIRED)
-
-if(FFS_VIEWER_BUILD_OFFLINE_VALIDATE)
-  enable_language(CUDA)
-  find_package(CUDAToolkit REQUIRED)
 
 # Route A: the vendored single-engine FFS runtime and FFSGWCVolume plugin.
 add_subdirectory(third_party/fast_foundation_stereo_runtime)
 if(NOT TARGET ffs::runtime)
   message(FATAL_ERROR "Vendored Fast-FoundationStereo runtime did not export ffs::runtime")
-endif()
 endif()
 
 function(ffs_viewer_enable_warnings target)
@@ -65,8 +61,8 @@ function(ffs_viewer_enable_warnings target)
 endfunction()
 
 # This target is deliberately independent of the RealSense/live-viewer stack.
-# It opens the first two cameras discovered by Sentech StApi and immediately
-# exits, so it can be used to verify that both cameras are connectable.
+# Camera roles are matched by their configured Sentech names, never by the
+# discovery order reported by StApi.
 if(FFS_VIEWER_BUILD_SENTECH_DUAL_CONNECT)
   set(FFS_SENTECH_ROOT "/opt/sentech" CACHE PATH
       "Sentech StApi SDK installation prefix")
@@ -86,37 +82,76 @@ if(FFS_VIEWER_BUILD_SENTECH_DUAL_CONNECT)
   find_library(FFS_SENTECH_GENAPI_LIBRARY NAMES GenApi
     PATHS "${FFS_SENTECH_ROOT}/lib/GenICam"
     NO_DEFAULT_PATH)
+  find_library(FFS_SENTECH_IP_LIBRARY NAMES StApi_IP
+    PATHS "${FFS_SENTECH_ROOT}/lib"
+    NO_DEFAULT_PATH)
+  find_library(FFS_SENTECH_TURBOJPEG_LIBRARY NAMES turbojpeg
+    PATHS "${FFS_SENTECH_ROOT}/lib"
+    NO_DEFAULT_PATH)
 
   if(NOT FFS_SENTECH_STAPI_INCLUDE_DIR OR NOT FFS_SENTECH_GENICAM_INCLUDE_DIR
      OR NOT FFS_SENTECH_TL_LIBRARY OR NOT FFS_SENTECH_GCBASE_LIBRARY
-     OR NOT FFS_SENTECH_GENAPI_LIBRARY)
+     OR NOT FFS_SENTECH_GENAPI_LIBRARY OR NOT FFS_SENTECH_IP_LIBRARY
+     OR NOT FFS_SENTECH_TURBOJPEG_LIBRARY)
     message(FATAL_ERROR
       "Sentech StApi SDK was not found under ${FFS_SENTECH_ROOT}. "
       "Set FFS_SENTECH_ROOT to the SDK installation prefix or disable "
       "FFS_VIEWER_BUILD_SENTECH_DUAL_CONNECT.")
   endif()
 
-  add_executable(ffs_sentech_dual_connect
-    apps/sentech_dual_connect/main.cpp
+  find_package(OpenGL REQUIRED)
+  find_package(glfw3 REQUIRED)
+  find_package(GLEW REQUIRED)
+  find_package(OpenCV 4 REQUIRED COMPONENTS core imgproc)
+
+  add_library(sentech_imgui STATIC
+    third_party/imgui/imgui.cpp
+    third_party/imgui/imgui_draw.cpp
+    third_party/imgui/imgui_tables.cpp
+    third_party/imgui/imgui_widgets.cpp
+    third_party/imgui/backends/imgui_impl_glfw.cpp
+    third_party/imgui/backends/imgui_impl_opengl3.cpp
   )
-  target_compile_features(ffs_sentech_dual_connect PRIVATE cxx_std_20)
-  target_compile_definitions(ffs_sentech_dual_connect PRIVATE
+  target_include_directories(sentech_imgui PUBLIC
+    third_party/imgui
+    third_party/imgui/backends
+  )
+  target_link_libraries(sentech_imgui PUBLIC glfw OpenGL::GL)
+
+  add_executable(sentech_stereo
+    apps/sentech_stereo/main.cpp
+  )
+  target_compile_features(sentech_stereo PRIVATE cxx_std_20)
+  target_compile_definitions(sentech_stereo PRIVATE
     FFS_SENTECH_GENTL_DIRECTORY="${FFS_SENTECH_ROOT}/lib"
   )
-  target_include_directories(ffs_sentech_dual_connect PRIVATE
+  target_include_directories(sentech_stereo PRIVATE
     "${FFS_SENTECH_STAPI_INCLUDE_DIR}"
     "${FFS_SENTECH_GENICAM_INCLUDE_DIR}"
   )
-  target_link_libraries(ffs_sentech_dual_connect PRIVATE
+  target_link_libraries(sentech_stereo PRIVATE
     "${FFS_SENTECH_TL_LIBRARY}"
     "${FFS_SENTECH_GCBASE_LIBRARY}"
     "${FFS_SENTECH_GENAPI_LIBRARY}"
+    "${FFS_SENTECH_IP_LIBRARY}"
+    "${FFS_SENTECH_TURBOJPEG_LIBRARY}"
+    sentech_imgui
+    glfw
+    GLEW::GLEW
+    OpenGL::GL
+    ${OpenCV_LIBS}
     Threads::Threads
   )
-  set_target_properties(ffs_sentech_dual_connect PROPERTIES
+  set_target_properties(sentech_stereo PROPERTIES
     BUILD_RPATH "${FFS_SENTECH_ROOT}/lib;${FFS_SENTECH_ROOT}/lib/GenICam"
   )
-  ffs_viewer_enable_warnings(ffs_sentech_dual_connect)
+  # StApi_IP has Sentech-private transitive dependencies (such as turbojpeg).
+  # Use DT_RPATH so this SDK path is also searched for those dependencies.
+  target_link_options(sentech_stereo PRIVATE
+    "-Wl,--disable-new-dtags"
+    "-Wl,--no-as-needed"
+  )
+  ffs_viewer_enable_warnings(sentech_stereo)
 endif()
 
 if(FFS_VIEWER_BUILD_OFFLINE_VALIDATE)
@@ -128,8 +163,8 @@ if(FFS_VIEWER_BUILD_OFFLINE_VALIDATE)
   find_package(glfw3 REQUIRED)
   if(NOT OpenCV_FOUND)
     message(FATAL_ERROR
-      "ffs_offline_validate requires OpenCV 4 development files (core, imgcodecs, imgproc). "
-      "On Ubuntu install libopencv-dev. To configure only the FFS runtime, use -DFFS_VIEWER_BUILD_OFFLINE_VALIDATE=OFF.")
+      "offline_validate requires OpenCV 4 development files (core, imgcodecs, imgproc). "
+      "On Ubuntu install libopencv-dev.")
   endif()
   add_library(ffs_viewer_imgui STATIC
     third_party/imgui/imgui.cpp
@@ -174,39 +209,39 @@ if(FFS_VIEWER_BUILD_OFFLINE_VALIDATE)
   )
   ffs_viewer_enable_warnings(ffs_viewer_offline)
 
-  add_executable(ffs_offline_validate apps/offline_validate/main.cpp)
-  target_link_libraries(ffs_offline_validate PRIVATE ffs_viewer::offline)
-  target_compile_definitions(ffs_offline_validate PRIVATE
+  add_executable(offline_validate apps/offline_validate/main.cpp)
+  target_link_libraries(offline_validate PRIVATE ffs_viewer::offline)
+  target_compile_definitions(offline_validate PRIVATE
     FFS_VIEWER_DEFAULT_ENGINE_DIR="${FFS_VIEWER_DEFAULT_ENGINE_DIR}"
     FFS_VIEWER_DEFAULT_CONFIG="${FFS_VIEWER_DEFAULT_CONFIG}"
   )
-  ffs_viewer_enable_warnings(ffs_offline_validate)
+  ffs_viewer_enable_warnings(offline_validate)
 
-  add_executable(ffs_live_infer apps/live_infer/main.cpp)
-  target_link_libraries(ffs_live_infer PRIVATE ffs_viewer::offline)
-  target_compile_definitions(ffs_live_infer PRIVATE
+  add_executable(live_infer apps/live_infer/main.cpp)
+  target_link_libraries(live_infer PRIVATE ffs_viewer::offline)
+  target_compile_definitions(live_infer PRIVATE
     FFS_VIEWER_DEFAULT_ENGINE_DIR="${FFS_VIEWER_DEFAULT_ENGINE_DIR}"
   )
-  ffs_viewer_enable_warnings(ffs_live_infer)
+  ffs_viewer_enable_warnings(live_infer)
 
-  add_executable(ffs_live_viewer
+  add_executable(live_viewer
     apps/live_viewer/main.cpp
     apps/live_viewer/live_pipeline.cpp
     apps/live_viewer/opengl_point_cloud_viewer.cpp
   )
-  target_link_libraries(ffs_live_viewer PRIVATE ffs_viewer::offline ffs_viewer_imgui glfw GLEW OpenGL::GL)
-  target_compile_definitions(ffs_live_viewer PRIVATE
+  target_link_libraries(live_viewer PRIVATE ffs_viewer::offline ffs_viewer_imgui glfw GLEW OpenGL::GL)
+  target_compile_definitions(live_viewer PRIVATE
     FFS_VIEWER_DEFAULT_ENGINE_DIR="${FFS_VIEWER_DEFAULT_ENGINE_DIR}"
     FFS_VIEWER_DEFAULT_FS_ENGINE_DIR="${FFS_VIEWER_DEFAULT_FS_ENGINE_DIR}"
   )
-  ffs_viewer_enable_warnings(ffs_live_viewer)
+  ffs_viewer_enable_warnings(live_viewer)
 
-  add_custom_command(TARGET ffs_offline_validate POST_BUILD
+  add_custom_command(TARGET offline_validate POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E make_directory
-            "$<TARGET_FILE_DIR:ffs_offline_validate>/config"
+            "$<TARGET_FILE_DIR:offline_validate>/config"
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "${FFS_VIEWER_DEFAULT_CONFIG}"
-            "$<TARGET_FILE_DIR:ffs_offline_validate>/config/offline_validate.yaml"
+            "$<TARGET_FILE_DIR:offline_validate>/config/offline_validate.yaml"
     VERBATIM
   )
 endif()

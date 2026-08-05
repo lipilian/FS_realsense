@@ -348,7 +348,7 @@ int main(int argc, char **argv) {
         glfwTerminate();
         return 0;
     } catch (const std::exception &error) {
-        std::cerr << "ffs_live_viewer: " << error.what() << '\n';
+        std::cerr << "live_viewer: " << error.what() << '\n';
         return 1;
 }
     }
