@@ -9,7 +9,7 @@ if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
       "CUDA architectures" FORCE)
 endif()
 
-project(ffs_viewer VERSION 0.1.0 LANGUAGES CXX CUDA)
+project(ffs_viewer VERSION 0.1.0 LANGUAGES CXX)
 
 include(CTest)
 include(GNUInstallDirs)
@@ -24,6 +24,8 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 option(FFS_VIEWER_BUILD_OFFLINE_VALIDATE
        "Build the DB3-based offline validation executable" ON)
+option(FFS_VIEWER_BUILD_SENTECH_DUAL_CONNECT
+       "Build the minimal two-camera Sentech connection test" ON)
 option(FFS_VIEWER_WARNINGS_AS_ERRORS
        "Treat C++ warnings in this project as errors" OFF)
 
@@ -38,13 +40,17 @@ set(FFS_VIEWER_DEFAULT_CONFIG
     "${CMAKE_CURRENT_SOURCE_DIR}/config/offline_validate.yaml" CACHE FILEPATH
     "Default offline-validation configuration file")
 
-find_package(CUDAToolkit REQUIRED)
 find_package(Threads REQUIRED)
+
+if(FFS_VIEWER_BUILD_OFFLINE_VALIDATE)
+  enable_language(CUDA)
+  find_package(CUDAToolkit REQUIRED)
 
 # Route A: the vendored single-engine FFS runtime and FFSGWCVolume plugin.
 add_subdirectory(third_party/fast_foundation_stereo_runtime)
 if(NOT TARGET ffs::runtime)
   message(FATAL_ERROR "Vendored Fast-FoundationStereo runtime did not export ffs::runtime")
+endif()
 endif()
 
 function(ffs_viewer_enable_warnings target)
@@ -57,6 +63,61 @@ function(ffs_viewer_enable_warnings target)
     )
   endif()
 endfunction()
+
+# This target is deliberately independent of the RealSense/live-viewer stack.
+# It opens the first two cameras discovered by Sentech StApi and immediately
+# exits, so it can be used to verify that both cameras are connectable.
+if(FFS_VIEWER_BUILD_SENTECH_DUAL_CONNECT)
+  set(FFS_SENTECH_ROOT "/opt/sentech" CACHE PATH
+      "Sentech StApi SDK installation prefix")
+
+  find_path(FFS_SENTECH_STAPI_INCLUDE_DIR StApi_TL.h
+    PATHS "${FFS_SENTECH_ROOT}/include/StApi"
+    NO_DEFAULT_PATH)
+  find_path(FFS_SENTECH_GENICAM_INCLUDE_DIR GenApi/GenApi.h
+    PATHS "${FFS_SENTECH_ROOT}/include/GenICam"
+    NO_DEFAULT_PATH)
+  find_library(FFS_SENTECH_TL_LIBRARY NAMES StApi_TL
+    PATHS "${FFS_SENTECH_ROOT}/lib"
+    NO_DEFAULT_PATH)
+  find_library(FFS_SENTECH_GCBASE_LIBRARY NAMES GCBase
+    PATHS "${FFS_SENTECH_ROOT}/lib/GenICam"
+    NO_DEFAULT_PATH)
+  find_library(FFS_SENTECH_GENAPI_LIBRARY NAMES GenApi
+    PATHS "${FFS_SENTECH_ROOT}/lib/GenICam"
+    NO_DEFAULT_PATH)
+
+  if(NOT FFS_SENTECH_STAPI_INCLUDE_DIR OR NOT FFS_SENTECH_GENICAM_INCLUDE_DIR
+     OR NOT FFS_SENTECH_TL_LIBRARY OR NOT FFS_SENTECH_GCBASE_LIBRARY
+     OR NOT FFS_SENTECH_GENAPI_LIBRARY)
+    message(FATAL_ERROR
+      "Sentech StApi SDK was not found under ${FFS_SENTECH_ROOT}. "
+      "Set FFS_SENTECH_ROOT to the SDK installation prefix or disable "
+      "FFS_VIEWER_BUILD_SENTECH_DUAL_CONNECT.")
+  endif()
+
+  add_executable(ffs_sentech_dual_connect
+    apps/sentech_dual_connect/main.cpp
+  )
+  target_compile_features(ffs_sentech_dual_connect PRIVATE cxx_std_20)
+  target_compile_definitions(ffs_sentech_dual_connect PRIVATE
+    FFS_SENTECH_GENTL_DIRECTORY="${FFS_SENTECH_ROOT}/lib"
+  )
+  target_include_directories(ffs_sentech_dual_connect PRIVATE
+    "${FFS_SENTECH_STAPI_INCLUDE_DIR}"
+    "${FFS_SENTECH_GENICAM_INCLUDE_DIR}"
+  )
+  target_link_libraries(ffs_sentech_dual_connect PRIVATE
+    "${FFS_SENTECH_TL_LIBRARY}"
+    "${FFS_SENTECH_GCBASE_LIBRARY}"
+    "${FFS_SENTECH_GENAPI_LIBRARY}"
+    Threads::Threads
+  )
+  set_target_properties(ffs_sentech_dual_connect PROPERTIES
+    BUILD_RPATH "${FFS_SENTECH_ROOT}/lib;${FFS_SENTECH_ROOT}/lib/GenICam"
+  )
+  ffs_viewer_enable_warnings(ffs_sentech_dual_connect)
+endif()
 
 if(FFS_VIEWER_BUILD_OFFLINE_VALIDATE)
   # DB3 playback comes from the current librealsense recording format; OpenCV
