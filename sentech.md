@@ -115,13 +115,13 @@ cpp/build/ffs_build_single_engine \
 
 本机已成功生成 `models/ffs_608x512/fast_foundationstereo.engine`（约 51 MB）。运行时目录必须同时保留 `fast_foundationstereo.engine` 与唯一的 `onnx.yaml`。导出过程中的 PyTorch `TracerWarning`、legacy ONNX exporter 和 constant-folding warning 对这次固定尺寸 engine 属于预期提示。`max_disp=192` 目前沿用现有 engine；之后应根据 Sentech 在 `608 × 512` 下的最近工作距离及校正后最大视差重新评估。
 
-`sentech_stereo` 会在用户点击 `Show Rectified Images` 时启动独立的 latest-frame FFS worker。每个 rectified pair 的左右图均去掉左、右边缘各 8 px，随后缩小为 `608 × 512` BGR8 并直接送入 FFS 的 RGB 路径（runtime 内部完成 BGR→RGB channel reorder）。worker 只保留最新 pending pair：当推理慢于采集时会丢掉旧 pair，不会令 live view 累积延迟。最新 disparity 以 Turbo 伪彩色显示在 `Live Disparity` 窗口。worker 会用 `stereoRectify` 输出的投影内参、基线、共同裁剪和下采样后的坐标系在 CUDA 上把 disparity 投影为彩色点云；每帧的 `608 × 512` GPU 顶点通过 CUDA–OpenGL interop 直接写入 live viewer 的 VBO，不再把 `xyz/rgb` 回传 CPU。无效点会在 GPU 上隐藏，并过滤 `0.1–10 m` 深度；disparity 伪彩图仍会回传 CPU 用于 ImGui。`Live Point Cloud` 支持左键拖动旋转、右键拖动平移、滚轮缩放；切回 raw 图会停止该 worker。
+`sentech_stereo` 会在用户点击 `Show Rectified Images` 时启动独立的 latest-frame FFS worker。每个 rectified pair 的左右图均去掉左、右边缘各 8 px，随后缩小为 `608 × 512` BGR8 并直接送入 FFS 的 RGB 路径（runtime 内部完成 BGR→RGB channel reorder）。worker 只保留最新 pending pair：当推理慢于采集时会丢掉旧 pair，不会令 live view 累积延迟。最新 disparity 以 Turbo 伪彩色显示在 `Live Disparity` 窗口。worker 会用 `stereoRectify` 输出的投影内参、基线、共同裁剪和下采样后的坐标系在 CUDA 上把 disparity 投影为彩色点云；每帧的 `608 × 512` GPU 顶点通过 CUDA–OpenGL interop 直接写入 live viewer 的 VBO，不再把 `xyz/rgb` 回传 CPU。无效点会在 GPU 上隐藏，并过滤 `0.1–1 m` 深度；disparity 伪彩图仍会回传 CPU 用于 ImGui。`Live Point Cloud` 支持左键拖动旋转、右键拖动平移、滚轮缩放；切回 raw 图会停止该 worker。
 
 ### FoundationStereo 最终 Capture / Draw
 
 `models/fs_608x512_iters32/fs.engine` 的输入与输出都是 `1 × 3 × 512 × 608` / `1 × 1 × 512 × 608`。按 `Capture` 时，app 会冻结当前 rectified pair，并使用与 live FFS 相同的共同裁剪（左右图各裁左、右 8 px）和缩放，得到 `608 × 512` BGR8 输入。FoundationStereo 输入保持 BGR CHW 顺序，与其 OpenCV BGR 训练/示例预处理一致。
 
-点击 `Capture` 后，冻结该 rectified pair，然后立即停止 live FFS worker 和两台 Sentech 相机的采集，避免最终 FS 推理与 live 推理争用 GPU。之后点击 `Start` 会恢复相机采集；如果仍处于 rectified 模式且已有 calibration，也会同时恢复 live FFS。FS 完成后复用 `live_viewer` 的 CUDA `FinalCloudProcessor`：依据 rectified projection 的 `fx`、`fy`、`cx`、`cy` 和 baseline 将 disparity 投影为三维点，过滤 `0.1–10 m`，并执行半径邻域去噪。最终 pair 直接显示在既有 `Stereo View`，最终点云、mesh edge 和最大连通表面积直接显示在既有 `Live Point Cloud`；不再创建 `Final Capture` 或 `Final Point Cloud` 窗口。`Draw` 打开的 mask editor 固定使用完整 `608 × 512`，并以深度连续阈值构建所选区域的三角 mesh。
+点击 `Capture` 后，冻结该 rectified pair，然后立即停止 live FFS worker 和两台 Sentech 相机的采集，避免最终 FS 推理与 live 推理争用 GPU。之后点击 `Start` 会恢复相机采集；如果仍处于 rectified 模式且已有 calibration，也会同时恢复 live FFS。FS 完成后复用 `live_viewer` 的 CUDA `FinalCloudProcessor`：依据 rectified projection 的 `fx`、`fy`、`cx`、`cy` 和 baseline 将 disparity 投影为三维点，过滤 `0.1–1 m`，并执行半径邻域去噪。最终点云直接使用左图的 BGR 彩色显示；最终 pair 直接显示在既有 `Stereo View`，最终点云、mesh edge 和最大连通表面积直接显示在既有 `Live Point Cloud`；不再创建 `Final Capture` 或 `Final Point Cloud` 窗口。`Draw` 打开的 mask editor 固定使用完整 `608 × 512`，并以深度连续阈值构建所选区域的三角 mesh。
 
 ### 1216 × 1024 实验记录
 

@@ -187,8 +187,9 @@ int main(int argc, char **argv) {
                 ffs_viewer::geometry::FinalCloudFrame gpu_cloud;
                 gpu_cloud.d_xyz = displayed_frame->final_gpu_xyz;
                 gpu_cloud.d_valid = displayed_frame->final_gpu_valid;
-                gpu_cloud.d_left_gray = displayed_frame->final_gpu_left_gray;
+                gpu_cloud.d_left_bgr_chw = displayed_frame->final_gpu_left_bgr_chw;
                 gpu_cloud.left_row_offset = displayed_frame->final_gpu_left_row_offset;
+                gpu_cloud.left_plane_stride = displayed_frame->final_gpu_left_plane_stride;
                 gpu_cloud.point_count = displayed_frame->final_gpu_point_count;
                 gpu_cloud.d_mesh_parent = displayed_frame->final_gpu_mesh_parent;
                 gpu_cloud.d_mesh_area = displayed_frame->final_gpu_mesh_area;
@@ -244,8 +245,9 @@ int main(int argc, char **argv) {
                     ffs_viewer::geometry::FinalCloudFrame gpu_cloud;
                     gpu_cloud.d_xyz = latest->final_gpu_xyz;
                     gpu_cloud.d_valid = latest->final_gpu_valid;
-                    gpu_cloud.d_left_gray = latest->final_gpu_left_gray;
+                    gpu_cloud.d_left_bgr_chw = latest->final_gpu_left_bgr_chw;
                     gpu_cloud.left_row_offset = latest->final_gpu_left_row_offset;
+                    gpu_cloud.left_plane_stride = latest->final_gpu_left_plane_stride;
                      gpu_cloud.point_count = latest->final_gpu_point_count;
                     gpu_cloud.d_mesh_parent = latest->final_gpu_mesh_parent;
                     gpu_cloud.d_mesh_area = latest->final_gpu_mesh_area;

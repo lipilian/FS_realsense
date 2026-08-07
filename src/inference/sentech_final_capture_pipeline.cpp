@@ -19,7 +19,7 @@ namespace {
 constexpr int kCropPixelsPerSide = 8;
 constexpr int kWidth = 608;
 constexpr int kHeight = 512;
-constexpr float kMaxDepthM = 10.0F;
+constexpr float kMaxDepthM = 1.0F;
 
 void requireBgr(const io::BgrFrame &frame, const char *name) {
     const std::size_t expected = static_cast<std::size_t>(frame.width) * frame.height * 3U;

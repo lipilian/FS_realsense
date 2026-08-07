@@ -408,7 +408,7 @@ int main() {
             ImageTexture final_right_texture;
             ImageTexture final_mask_texture;
             ffs_viewer::ui::OpenGLPointCloudViewer final_point_cloud_viewer;
-            final_point_cloud_viewer.setMaxDepth(10.0F);
+            final_point_cloud_viewer.setMaxDepth(1.0F);
             std::shared_ptr<const ffs_viewer::inference::SentechFinalCaptureResult> displayed_final_capture;
             bool show_final_mask_editor = false;
             bool show_final_capture_view = false;

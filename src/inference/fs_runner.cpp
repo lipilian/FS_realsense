@@ -316,7 +316,9 @@ geometry::FinalCloudFrame FsRunner::inferFinal(const io::StereoFrame& stereo,
     }
     return impl_->final_cloud_processor->process(impl_->d_disparity, impl_->d_left, impl_->stream, calibration,
                                                   stereo.width, stereo.height,
-                                                  impl_->pad_top * impl_->model_width, z_max_m, on_denoise);
+                                                  impl_->pad_top * impl_->model_width,
+                                                  impl_->model_width * impl_->model_height,
+                                                  z_max_m, on_denoise);
 }
 
 geometry::FinalCloudFrame FsRunner::inferFinalBgr(
@@ -339,7 +341,9 @@ geometry::FinalCloudFrame FsRunner::inferFinalBgr(
         throw std::runtime_error("TensorRT failed to enqueue final FS BGR inference");
     return impl_->final_cloud_processor->process(impl_->d_disparity, impl_->d_left, impl_->stream,
                                                   calibration, width, height,
-                                                  impl_->pad_top * impl_->model_width, z_max_m, on_denoise);
+                                                  impl_->pad_top * impl_->model_width,
+                                                  impl_->model_width * impl_->model_height,
+                                                  z_max_m, on_denoise);
 }
 
 int FsRunner::modelWidth() const { return impl_->model_width; }

@@ -30,8 +30,9 @@ struct RenderFrame {
     std::vector<float> final_disparity_values;
     const float* final_gpu_xyz = nullptr;
     const std::uint8_t* final_gpu_valid = nullptr;
-    const float* final_gpu_left_gray = nullptr;
+    const float* final_gpu_left_bgr_chw = nullptr;
     int final_gpu_left_row_offset = 0;
+    int final_gpu_left_plane_stride = 0;
     int final_gpu_point_count = 0;
     int* final_gpu_mesh_parent = nullptr;
     float* final_gpu_mesh_cell_area = nullptr;

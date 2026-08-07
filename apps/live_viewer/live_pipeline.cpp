@@ -180,8 +180,9 @@ void LivePipeline::run(std::stop_token stop_token) {
                 result->final_disparity_values = final_cloud.disparity.values;
                 result->final_gpu_xyz = final_cloud.d_xyz;
                 result->final_gpu_valid = final_cloud.d_valid;
-                result->final_gpu_left_gray = final_cloud.d_left_gray;
+                result->final_gpu_left_bgr_chw = final_cloud.d_left_bgr_chw;
                 result->final_gpu_left_row_offset = final_cloud.left_row_offset;
+                result->final_gpu_left_plane_stride = final_cloud.left_plane_stride;
                 result->final_gpu_point_count = final_cloud.point_count;
                 result->final_gpu_mesh_parent = final_cloud.d_mesh_parent;
                 result->final_gpu_mesh_cell_area = final_cloud.d_mesh_cell_area;

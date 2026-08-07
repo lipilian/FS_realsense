@@ -17,8 +17,9 @@ struct FinalCloudFrame {
     inference::DisparityFrame disparity;
     const float* d_xyz = nullptr;
     const std::uint8_t* d_valid = nullptr;
-    const float* d_left_gray = nullptr;
+    const float* d_left_bgr_chw = nullptr;
     int left_row_offset = 0;
+    int left_plane_stride = 0;
     int point_count = 0;
     int display_step = 1;
     float mesh_depth_threshold_m = .01F;
@@ -55,7 +56,7 @@ class FinalCloudProcessor final {
     FinalCloudFrame process(float* d_disparity, const float* d_left_input, cudaStream_t stream,
                             const io::StereoCalibration& calibration,
                             int source_width, int source_height, int left_row_offset,
-                            float z_max_m,
+                            int left_plane_stride, float z_max_m,
                             const std::function<void()>& on_denoise);
 
   private:

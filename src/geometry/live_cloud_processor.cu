@@ -11,7 +11,7 @@ namespace {
 
 constexpr int kThreads = 256;
 constexpr float kMinDepthM = 0.1F;
-constexpr float kMaxDepthM = 10.0F;
+constexpr float kMaxDepthM = 1.0F;
 constexpr float kHiddenDepthM = 100.0F;
 
 void check(cudaError_t result, const char* operation) {
