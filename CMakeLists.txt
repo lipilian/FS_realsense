@@ -119,12 +119,14 @@ if(FFS_VIEWER_BUILD_SENTECH_DUAL_CONNECT)
 
   add_executable(sentech_stereo
     apps/sentech_stereo/main.cpp
+    src/io/sentech_stereo_source.cpp
   )
   target_compile_features(sentech_stereo PRIVATE cxx_std_20)
   target_compile_definitions(sentech_stereo PRIVATE
     FFS_SENTECH_GENTL_DIRECTORY="${FFS_SENTECH_ROOT}/lib"
   )
   target_include_directories(sentech_stereo PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/include"
     "${FFS_SENTECH_STAPI_INCLUDE_DIR}"
     "${FFS_SENTECH_GENICAM_INCLUDE_DIR}"
   )

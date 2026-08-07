@@ -1,194 +1,26 @@
-#include <StApi_IP.h>
-#include <StApi_TL.h>
-
 #include <GL/glew.h>
 #include <GLFW/glfw3.h>
 #include <imgui.h>
 #include <imgui_impl_glfw.h>
 #include <imgui_impl_opengl3.h>
+
+#include "ffs_viewer/io/sentech_stereo_source.hpp"
 #include <algorithm>
+#include <atomic>
 #include <array>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
+#include <memory>
+#include <mutex>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace {
-
-constexpr std::size_t kCameraCount = 2;
-constexpr std::size_t kLeftCameraIndex = 0;
-constexpr std::size_t kRightCameraIndex = 1;
-constexpr std::array<const char *, kCameraCount> kCameraLabels{"Left camera", "Right camera"};
-constexpr const char *kLeftCameraName = "STC-MCS500U3V(21LJ530)";
-constexpr const char *kRightCameraName = "STC-MCS500U3V(21LJ548)";
-
-struct BgrFrame {
-    int width = 0;
-    int height = 0;
-    std::vector<std::uint8_t> pixels;
-
-    bool valid() const {
-        return width > 0 && height > 0 && !pixels.empty();
-    }
-};
-
-class StereoCapture {
-  public:
-    void start() {
-        if (running_)
-            return;
-
-        try {
-            system_.Reset(StApi::CreateIStSystem());
-            for (std::size_t discovered = 0; discovered < kCameraCount; ++discovered) {
-                StApi::CIStDevicePtr device(system_->CreateFirstIStDevice());
-                const std::size_t index = cameraIndexForName(*device->GetIStDeviceInfo());
-                if (devices_[index].IsValid())
-                    throw std::runtime_error("Both discovered cameras match " +
-                                             std::string(kCameraLabels[index]));
-                devices_[index].Reset(device.Move());
-            }
-
-            for (std::size_t index = 0; index < kCameraCount; ++index) {
-                streams_[index].Reset(devices_[index]->CreateIStDataStream(0));
-                converters_[index].Reset(
-                    StApi::CreateIStConverter(StApi::StConverterType_PixelFormat));
-                converters_[index]->SetDestinationPixelFormat(StApi::StPFNC_BGR8);
-                converted_images_[index].Reset(StApi::CreateIStImageBuffer());
-
-                std::cout << kCameraLabels[index] << " connected: "
-                          << devices_[index]->GetIStDeviceInfo()->GetDisplayName() << '\n';
-                streams_[index]->StartAcquisition();
-                devices_[index]->AcquisitionStart();
-            }
-            running_ = true;
-            status_ = "Streaming two Sentech cameras";
-        } catch (...) {
-            stopNoThrow();
-            throw;
-        }
-    }
-
-    void stop() {
-        stopNoThrow();
-        status_ = "Stopped";
-    }
-
-    void poll() {
-        if (!running_)
-            return;
-
-        for (std::size_t index = 0; index < kCameraCount; ++index) {
-            StApi::IStStreamBufferReleasable *raw_buffer =
-                streams_[index]->RetrieveBuffer(1, StApi::StTimeoutHandling_Return);
-            if (raw_buffer == nullptr)
-                continue;
-
-            StApi::CIStStreamBufferPtr buffer(raw_buffer);
-            if (!buffer->GetIStStreamBufferInfo()->IsImagePresent())
-                continue;
-
-            converters_[index]->Convert(buffer->GetIStImage(), converted_images_[index]);
-            StApi::IStImage *image = converted_images_[index]->GetIStImage();
-            copyBgrImage(*image, frames_[index]);
-        }
-    }
-
-    bool running() const {
-        return running_;
-    }
-
-    const std::string &status() const {
-        return status_;
-    }
-
-    const BgrFrame &leftFrame() const {
-        return frames_.at(kLeftCameraIndex);
-    }
-
-    const BgrFrame &rightFrame() const {
-        return frames_.at(kRightCameraIndex);
-    }
-
-    ~StereoCapture() {
-        stopNoThrow();
-    }
-
-  private:
-    static std::size_t cameraIndexForName(const StApi::IStDeviceInfo &info) {
-        const std::string display_name(info.GetDisplayName().c_str());
-        const std::string user_defined_name(info.GetUserDefinedName().c_str());
-        const auto matches = [&](const char *configured_name) {
-            return display_name == configured_name || user_defined_name == configured_name;
-        };
-
-        if (matches(kLeftCameraName))
-            return kLeftCameraIndex;
-        if (matches(kRightCameraName))
-            return kRightCameraIndex;
-
-        throw std::runtime_error("Unknown Sentech camera. DisplayName=\"" + display_name +
-                                 "\", UserDefinedName=\"" + user_defined_name + "\"");
-    }
-
-    static void copyBgrImage(const StApi::IStImage &image, BgrFrame &frame) {
-        const int width = static_cast<int>(image.GetImageWidth());
-        const int height = static_cast<int>(image.GetImageHeight());
-        const std::size_t row_bytes = static_cast<std::size_t>(width) * 3U;
-        const auto *source = static_cast<const std::uint8_t *>(image.GetImageBuffer());
-        const std::size_t source_pitch = image.GetImageLinePitch();
-
-        frame.width = width;
-        frame.height = height;
-        frame.pixels.resize(row_bytes * static_cast<std::size_t>(height));
-        for (int row = 0; row < height; ++row) {
-            std::memcpy(frame.pixels.data() + static_cast<std::size_t>(row) * row_bytes,
-                        source + static_cast<std::size_t>(row) * source_pitch, row_bytes);
-        }
-    }
-
-    void stopNoThrow() noexcept {
-        for (auto &device : devices_) {
-            if (device.IsValid()) {
-                try {
-                    device->AcquisitionStop();
-                } catch (...) {
-                }
-            }
-        }
-        for (auto &stream : streams_) {
-            if (stream.IsValid()) {
-                try {
-                    stream->StopAcquisition();
-                } catch (...) {
-                }
-            }
-        }
-        for (auto &stream : streams_)
-            stream.Reset();
-        for (auto &converter : converters_)
-            converter.Reset();
-        for (auto &image : converted_images_)
-            image.Reset();
-        for (auto &device : devices_)
-            device.Reset();
-        system_.Reset();
-        running_ = false;
-    }
-
-    StApi::CIStSystemPtr system_;
-    std::array<StApi::CIStDevicePtr, kCameraCount> devices_;
-    std::array<StApi::CIStDataStreamPtr, kCameraCount> streams_;
-    std::array<StApi::CIStPixelFormatConverterPtr, kCameraCount> converters_;
-    std::array<StApi::CIStImageBufferPtr, kCameraCount> converted_images_;
-    std::array<BgrFrame, kCameraCount> frames_;
-    bool running_ = false;
-    std::string status_ = "Stopped";
-};
 
 class ImageTexture {
   public:
@@ -197,7 +29,7 @@ class ImageTexture {
             glDeleteTextures(1, &texture_);
     }
 
-    void upload(const BgrFrame &frame) {
+    void upload(const ffs_viewer::io::BgrFrame &frame) {
         if (!frame.valid())
             return;
         if (texture_ == 0)
@@ -261,20 +93,10 @@ void drawStereoView(const ImageTexture &left, const ImageTexture &right) {
     ImGui::End();
 }
 
-void configureGenTlPath() {
-    if (std::getenv("GENICAM_GENTL64_PATH") == nullptr &&
-        setenv("GENICAM_GENTL64_PATH", FFS_SENTECH_GENTL_DIRECTORY, 0) != 0) {
-        throw std::runtime_error("Unable to configure GENICAM_GENTL64_PATH");
-    }
-}
-
 } // namespace
 
 int main() {
     try {
-        configureGenTlPath();
-        StApi::CStApiAutoInit stapi;
-
         if (!glfwInit())
             throw std::runtime_error("GLFW initialization failed");
         glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
@@ -302,7 +124,7 @@ int main() {
         ImGui_ImplOpenGL3_Init("#version 330");
 
         {
-            StereoCapture capture;
+            ffs_viewer::io::SentechStereoSource capture;
             ImageTexture left_texture;
             ImageTexture right_texture;
 
@@ -312,23 +134,22 @@ int main() {
                     capture.poll();
                     left_texture.upload(capture.leftFrame());
                     right_texture.upload(capture.rightFrame());
-                } catch (const GenICam::GenericException &error) {
+                } catch (const std::exception &error) {
                     capture.stop();
-                    std::cerr << "Streaming error: " << error.GetDescription() << '\n';
+                    std::cerr << "Streaming error: " << error.what() << '\n';
                 }
 
                 ImGui_ImplOpenGL3_NewFrame();
                 ImGui_ImplGlfw_NewFrame();
                 ImGui::NewFrame();
 
-                // Keep acquisition controls in their own block. Calibration
-                // controls can be added as a separate ImGui block later.
+                // Keep acquisition controls and calibration controls in separate blocks.
                 ImGui::Begin("Acquisition");
                 if (ImGui::Button("Start") && !capture.running()) {
                     try {
                         capture.start();
-                    } catch (const GenICam::GenericException &error) {
-                        std::cerr << "Start failed: " << error.GetDescription() << '\n';
+                    } catch (const std::exception &error) {
+                        std::cerr << "Start failed: " << error.what() << '\n';
                     }
                 }
                 ImGui::SameLine();
@@ -338,6 +159,11 @@ int main() {
                 if (ImGui::Button("Quit"))
                     glfwSetWindowShouldClose(window, GLFW_TRUE);
                 ImGui::TextUnformatted(capture.status().c_str());
+                ImGui::End();
+
+                ImGui::Begin("Calibration");
+                ImGui::Button("Live ChArUco Detection");
+                ImGui::TextDisabled("Detection is not connected yet.");
                 ImGui::End();
 
                 drawStereoView(left_texture, right_texture);
@@ -362,8 +188,6 @@ int main() {
         glfwDestroyWindow(window);
         glfwTerminate();
         return 0;
-    } catch (const GenICam::GenericException &error) {
-        std::cerr << "Sentech StApi error: " << error.GetDescription() << '\n';
     } catch (const std::exception &error) {
         std::cerr << "Error: " << error.what() << '\n';
     }

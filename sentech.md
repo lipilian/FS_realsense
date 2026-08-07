@@ -2,7 +2,8 @@
 
 ## 当前结构
 
-- 源码目录：`apps/sentech_stereo`
+- UI 源码：`apps/sentech_stereo/main.cpp`
+- Sentech 采集 I/O：`include/ffs_viewer/io/sentech_stereo_source.hpp` 与 `src/io/sentech_stereo_source.cpp`
 - CMake 目标与可执行文件：`sentech_stereo`
 - 原有 `live_viewer` 保留，未删除或替换。
 - Sentech app 不依赖 Intel RealSense 或 `realsense2`。
@@ -11,13 +12,17 @@
 
 `sentech_stereo` 是一个最小的双相机 ImGui viewer。
 
-控制窗口只有三个按钮：
+`Acquisition` 控制窗口有三个按钮：
 
-- `Quit`：退出程序。
 - `Start`：扫描两台可用 Sentech 相机，按源码中写死的相机名称识别左右角色，启动两路数据流，并显示左右画面。
 - `Stop`：停止两台相机及主机端的数据流。
+- `Quit`：退出程序。
+
+独立的 `Calibration` 控制窗口已添加 `Live ChArUco Detection` 按钮；目前仅为 UI 占位，尚未连接检测逻辑。
 
 图像通过 Sentech StApi 的像素格式转换器统一转换为 `BGR8`，再上传到 OpenGL 纹理，在 `Stereo View` 面板并排显示。左右角色不依赖设备发现顺序，而是按相机名称固定匹配：`STC-MCS500U3V(21LJ530)` 为左相机，`STC-MCS500U3V(21LJ548)` 为右相机。匹配 Sentech 的用户定义名称或显示名称；未知或重复名称会使 `Start` 失败。两路帧均不做软件旋转，按相机原始方向进入 app，输出尺寸保持为 `2448 × 2048`。除连接与采集外，当前 app 不修改相机设置、不做同步、标定、推理或点云处理。
+
+采集采用 latest-frame 缓冲：每台相机各有一个后台线程持续取流、转换并发布最新帧；UI 线程只读取每路最新完成帧。每路使用三个可复用 BGR 帧槽，UI 或后续检测跟不上时会丢弃旧帧，而不会使显示延迟持续累积。该机制不对两台相机做时间戳配对，也不提供硬件同步保证。
 
 ## 已验证的硬件
 
@@ -44,14 +49,14 @@ ImGui viewer 已成功编译。当前自动化环境没有 `xvfb-run`，因此�
 
 默认 Sentech SDK 根目录为 `/opt/sentech`，可通过 CMake 变量 `FFS_SENTECH_ROOT` 修改。
 
-左右相机名称直接写死在 `apps/sentech_stereo/main.cpp`：
+左右相机名称直接写死在 `src/io/sentech_stereo_source.cpp`：
 
 ```text
 Left:  STC-MCS500U3V(21LJ530)
 Right: STC-MCS500U3V(21LJ548)
 ```
 
-不使用 CMake 参数或缓存控制左右相机映射。若实际相机名称需要变更，直接修改源码中的 `kLeftCameraName` 和 `kRightCameraName` 后重新编译。
+不使用 CMake 参数或缓存控制左右相机映射。若实际相机名称需要变更，直接修改 I/O 源码中的 `kLeftCameraName` 和 `kRightCameraName` 后重新编译。
 
 程序仅在 `GENICAM_GENTL64_PATH` 未设置时自动指向 SDK 的 `lib` 目录，以便 StApi 找到 `libstgentl.cti`。
 
