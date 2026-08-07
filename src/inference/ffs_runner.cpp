@@ -192,6 +192,12 @@ DisparityFrame FfsRunner::inferBgr(int width, int height,
     return disparity;
 }
 
+geometry::LiveCloudFrame FfsRunner::makeLiveCloud(const io::StereoCalibration& calibration) {
+    return geometry::makeLiveCloudFrame(impl_->d_disparity, impl_->d_left_bgr,
+                                        impl_->width, impl_->height, calibration,
+                                        impl_->engine->stream());
+}
+
 int FfsRunner::modelWidth() const {
     return impl_->width;
 }

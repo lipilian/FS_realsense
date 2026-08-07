@@ -123,20 +123,27 @@ if(FFS_VIEWER_BUILD_SENTECH_DUAL_CONNECT)
     src/calibration/live_charuco_detector.cpp
     src/calibration/stereo_charuco_calibrator.cpp
     src/calibration/stereo_rectifier.cpp
+    src/geometry/final_cloud_processor.cu
+    src/geometry/live_cloud_processor.cu
     src/inference/ffs_runner.cpp
+    src/inference/fs_runner.cpp
     src/inference/sentech_ffs_pipeline.cpp
+    src/inference/sentech_final_capture_pipeline.cpp
     src/io/sentech_stereo_source.cpp
     src/ui/sentech_point_cloud_viewer.cpp
+    apps/live_viewer/opengl_point_cloud_viewer.cpp
   )
   target_compile_features(sentech_stereo PRIVATE cxx_std_20)
   target_compile_definitions(sentech_stereo PRIVATE
     FFS_SENTECH_GENTL_DIRECTORY="${FFS_SENTECH_ROOT}/lib"
     FFS_SENTECH_FFS_ENGINE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/models/ffs_608x512"
+    FFS_SENTECH_FS_ENGINE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/models/fs_608x512_iters32"
   )
   target_include_directories(sentech_stereo PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/include"
     "${FFS_SENTECH_STAPI_INCLUDE_DIR}"
     "${FFS_SENTECH_GENICAM_INCLUDE_DIR}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/apps/live_viewer"
   )
   target_link_libraries(sentech_stereo PRIVATE
     "${FFS_SENTECH_TL_LIBRARY}"
@@ -146,6 +153,8 @@ if(FFS_VIEWER_BUILD_SENTECH_DUAL_CONNECT)
     "${FFS_SENTECH_TURBOJPEG_LIBRARY}"
     ${OpenCV_LIBS}
     ffs::runtime
+    CUDA::cudart
+    CUDA::cuda_driver
     sentech_imgui
     glfw
     GLEW::GLEW
@@ -154,6 +163,9 @@ if(FFS_VIEWER_BUILD_SENTECH_DUAL_CONNECT)
   )
   set_target_properties(sentech_stereo PROPERTIES
     BUILD_RPATH "${FFS_SENTECH_ROOT}/lib;${FFS_SENTECH_ROOT}/lib/GenICam"
+    CUDA_STANDARD 17
+    CUDA_STANDARD_REQUIRED ON
+    CUDA_SEPARABLE_COMPILATION ON
   )
   # StApi_IP has Sentech-private transitive dependencies (such as turbojpeg).
   # Use DT_RPATH so this SDK path is also searched for those dependencies.
@@ -196,6 +208,7 @@ if(FFS_VIEWER_BUILD_OFFLINE_VALIDATE)
     src/inference/ffs_runner.cpp
     src/inference/fs_runner.cpp
     src/geometry/final_cloud_processor.cu
+    src/geometry/live_cloud_processor.cu
     src/validation/offline_validator.cpp
   )
   add_library(ffs_viewer::offline ALIAS ffs_viewer_offline)

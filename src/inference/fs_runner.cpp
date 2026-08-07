@@ -60,13 +60,6 @@ void requireTensor(const nvinfer1::ICudaEngine& engine, const char* name,
     }
 }
 
-void requireShape(const nvinfer1::Dims& dimensions, const char* tensor_name,
-                  int channels, int height, int width) {
-    if (dimensions.nbDims != 4 || dimensions.d[0] != 1 || dimensions.d[1] != channels ||
-        dimensions.d[2] != height || dimensions.d[3] != width) {
-        throw std::runtime_error(std::string("Unexpected FS tensor shape for ") + tensor_name);
-    }
-}
 
 void packY8AsPaddedRgb(const std::vector<std::uint8_t>& source, int source_width, int source_height,
                        int model_width, int content_height, int pad_top, int pad_bottom,
@@ -98,6 +91,35 @@ void packY8AsPaddedRgb(const std::vector<std::uint8_t>& source, int source_width
     }
 }
 
+void packBgrAsPaddedChw(const std::vector<std::uint8_t>& source, int source_width, int source_height,
+                        int model_width, int content_height, int pad_top, int pad_bottom,
+                        std::vector<float>& output) {
+    const std::size_t source_bytes = static_cast<std::size_t>(source_width) * source_height * 3U;
+    if (source.size() != source_bytes)
+        throw std::runtime_error("Stereo frame does not contain a complete BGR8 image");
+
+    const cv::Mat source_image(source_height, source_width, CV_8UC3,
+                               const_cast<std::uint8_t*>(source.data()));
+    cv::Mat resized;
+    cv::resize(source_image, resized, cv::Size(model_width, content_height), 0.0, 0.0,
+               cv::INTER_LINEAR);
+
+    const int model_height = content_height + pad_top + pad_bottom;
+    const std::size_t pixels = static_cast<std::size_t>(model_width) * model_height;
+    output.resize(3 * pixels);
+    for (int y = 0; y < model_height; ++y) {
+        const int content_y = std::clamp(y - pad_top, 0, content_height - 1);
+        const cv::Vec3b* source_row = resized.ptr<cv::Vec3b>(content_y);
+        for (int x = 0; x < model_width; ++x) {
+            const std::size_t index = static_cast<std::size_t>(y) * model_width + x;
+            // FoundationStereo training/demo input is OpenCV BGR stored as CHW.
+            output[index] = static_cast<float>(source_row[x][0]);
+            output[pixels + index] = static_cast<float>(source_row[x][1]);
+            output[2 * pixels + index] = static_cast<float>(source_row[x][2]);
+        }
+    }
+}
+
 }  // namespace
 
 struct FsRunner::Impl {
@@ -115,8 +137,8 @@ struct FsRunner::Impl {
     int model_width = 0;
     int model_height = 0;
     int content_height = 0;
-    static constexpr int kPadTop = 4;
-    static constexpr int kPadBottom = 4;
+    int pad_top = 0;
+    int pad_bottom = 0;
     std::vector<float> host_left;
     std::vector<float> host_right;
     std::vector<float> host_padded_disparity;
@@ -170,9 +192,13 @@ FsRunner::FsRunner(std::string engine_path) : impl_(std::make_unique<Impl>()) {
     const nvinfer1::Dims left_dimensions = impl_->engine->getTensorShape("left");
     const nvinfer1::Dims right_dimensions = impl_->engine->getTensorShape("right");
     const nvinfer1::Dims output_dimensions = impl_->engine->getTensorShape("disp");
-    requireShape(left_dimensions, "left", 3, 608, 960);
-    requireShape(right_dimensions, "right", 3, 608, 960);
-    requireShape(output_dimensions, "disp", 1, 608, 960);
+    if (left_dimensions.nbDims != 4 || left_dimensions.d[0] != 1 || left_dimensions.d[1] != 3 ||
+        right_dimensions.nbDims != 4 || right_dimensions.d[0] != 1 || right_dimensions.d[1] != 3 ||
+        output_dimensions.nbDims != 4 || output_dimensions.d[0] != 1 || output_dimensions.d[1] != 1 ||
+        left_dimensions.d[2] != right_dimensions.d[2] || left_dimensions.d[3] != right_dimensions.d[3] ||
+        left_dimensions.d[2] != output_dimensions.d[2] || left_dimensions.d[3] != output_dimensions.d[3]) {
+        throw std::runtime_error("Unexpected FS input/output tensor shapes");
+    }
     if (impl_->engine->getTensorDataType("left") != nvinfer1::DataType::kFLOAT ||
         impl_->engine->getTensorDataType("right") != nvinfer1::DataType::kFLOAT ||
         impl_->engine->getTensorDataType("disp") != nvinfer1::DataType::kFLOAT) {
@@ -181,7 +207,13 @@ FsRunner::FsRunner(std::string engine_path) : impl_(std::make_unique<Impl>()) {
 
     impl_->model_width = left_dimensions.d[3];
     impl_->model_height = left_dimensions.d[2];
-    impl_->content_height = impl_->model_height - Impl::kPadTop - Impl::kPadBottom;
+    // The legacy D455 model is 960x608 with an artificial 4-row pad on
+    // each side. Sentech's 608x512 model is natively divisible by 32.
+    if (impl_->model_width == 960 && impl_->model_height == 608) {
+        impl_->pad_top = 4;
+        impl_->pad_bottom = 4;
+    }
+    impl_->content_height = impl_->model_height - impl_->pad_top - impl_->pad_bottom;
     impl_->context.reset(impl_->engine->createExecutionContext());
     if (!impl_->context) {
         throw std::runtime_error("TensorRT failed to create the FS execution context");
@@ -212,9 +244,9 @@ DisparityFrame FsRunner::infer(const io::StereoFrame& stereo) {
         throw std::runtime_error("FS inference requires positive stereo dimensions");
     }
     packY8AsPaddedRgb(stereo.left_y8, stereo.width, stereo.height, impl_->model_width,
-                       impl_->content_height, Impl::kPadTop, Impl::kPadBottom, impl_->host_left);
+                       impl_->content_height, impl_->pad_top, impl_->pad_bottom, impl_->host_left);
     packY8AsPaddedRgb(stereo.right_y8, stereo.width, stereo.height, impl_->model_width,
-                       impl_->content_height, Impl::kPadTop, Impl::kPadBottom, impl_->host_right);
+                       impl_->content_height, impl_->pad_top, impl_->pad_bottom, impl_->host_right);
 
     const std::size_t model_pixels = static_cast<std::size_t>(impl_->model_width) * impl_->model_height;
     const auto host_begin = std::chrono::steady_clock::now();
@@ -246,7 +278,7 @@ DisparityFrame FsRunner::infer(const io::StereoFrame& stereo) {
     output.values.resize(static_cast<std::size_t>(output.width) * output.height);
     for (int y = 0; y < output.height; ++y) {
         const float* source = impl_->host_padded_disparity.data() +
-                              static_cast<std::size_t>(y + Impl::kPadTop) * output.width;
+                              static_cast<std::size_t>(y + impl_->pad_top) * output.width;
         float* destination = output.values.data() + static_cast<std::size_t>(y) * output.width;
         std::copy_n(source, output.width, destination);
     }
@@ -272,9 +304,9 @@ geometry::FinalCloudFrame FsRunner::inferFinal(const io::StereoFrame& stereo,
         throw std::runtime_error("FS final inference requires positive stereo dimensions");
     }
     packY8AsPaddedRgb(stereo.left_y8, stereo.width, stereo.height, impl_->model_width,
-                       impl_->content_height, Impl::kPadTop, Impl::kPadBottom, impl_->host_left);
+                       impl_->content_height, impl_->pad_top, impl_->pad_bottom, impl_->host_left);
     packY8AsPaddedRgb(stereo.right_y8, stereo.width, stereo.height, impl_->model_width,
-                       impl_->content_height, Impl::kPadTop, Impl::kPadBottom, impl_->host_right);
+                       impl_->content_height, impl_->pad_top, impl_->pad_bottom, impl_->host_right);
     checkCuda(cudaMemcpyAsync(impl_->d_left, impl_->host_left.data(), impl_->host_left.size() * sizeof(float),
                               cudaMemcpyHostToDevice, impl_->stream), "copy final FS left input to GPU");
     checkCuda(cudaMemcpyAsync(impl_->d_right, impl_->host_right.data(), impl_->host_right.size() * sizeof(float),
@@ -283,14 +315,38 @@ geometry::FinalCloudFrame FsRunner::inferFinal(const io::StereoFrame& stereo,
         throw std::runtime_error("TensorRT failed to enqueue final FS inference");
     }
     return impl_->final_cloud_processor->process(impl_->d_disparity, impl_->d_left, impl_->stream, calibration,
-                                                  stereo.width, stereo.height, z_max_m, on_denoise);
+                                                  stereo.width, stereo.height,
+                                                  impl_->pad_top * impl_->model_width, z_max_m, on_denoise);
+}
+
+geometry::FinalCloudFrame FsRunner::inferFinalBgr(
+    int width, int height, const std::vector<std::uint8_t>& left_bgr,
+    const std::vector<std::uint8_t>& right_bgr, const io::StereoCalibration& calibration,
+    float z_max_m, const std::function<void()>& on_denoise) {
+    if (width <= 0 || height <= 0)
+        throw std::runtime_error("FS BGR inference requires positive stereo dimensions");
+    packBgrAsPaddedChw(left_bgr, width, height, impl_->model_width, impl_->content_height,
+                        impl_->pad_top, impl_->pad_bottom, impl_->host_left);
+    packBgrAsPaddedChw(right_bgr, width, height, impl_->model_width, impl_->content_height,
+                        impl_->pad_top, impl_->pad_bottom, impl_->host_right);
+    checkCuda(cudaMemcpyAsync(impl_->d_left, impl_->host_left.data(),
+                              impl_->host_left.size() * sizeof(float), cudaMemcpyHostToDevice,
+                              impl_->stream), "copy final FS BGR left input to GPU");
+    checkCuda(cudaMemcpyAsync(impl_->d_right, impl_->host_right.data(),
+                              impl_->host_right.size() * sizeof(float), cudaMemcpyHostToDevice,
+                              impl_->stream), "copy final FS BGR right input to GPU");
+    if (!impl_->context->enqueueV3(impl_->stream))
+        throw std::runtime_error("TensorRT failed to enqueue final FS BGR inference");
+    return impl_->final_cloud_processor->process(impl_->d_disparity, impl_->d_left, impl_->stream,
+                                                  calibration, width, height,
+                                                  impl_->pad_top * impl_->model_width, z_max_m, on_denoise);
 }
 
 int FsRunner::modelWidth() const { return impl_->model_width; }
 int FsRunner::modelHeight() const { return impl_->model_height; }
 int FsRunner::contentWidth() const { return impl_->model_width; }
 int FsRunner::contentHeight() const { return impl_->content_height; }
-int FsRunner::padTop() const { return Impl::kPadTop; }
-int FsRunner::padBottom() const { return Impl::kPadBottom; }
+int FsRunner::padTop() const { return impl_->pad_top; }
+int FsRunner::padBottom() const { return impl_->pad_bottom; }
 
 }  // namespace ffs_viewer::inference

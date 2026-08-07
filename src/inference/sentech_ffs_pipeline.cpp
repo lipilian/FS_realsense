@@ -59,39 +59,17 @@ FfsBgrInput makeFfsInput(const io::BgrFrame &left, const io::BgrFrame &right) {
     return input;
 }
 
-void buildPointCloud(const DisparityFrame &disparity, const std::vector<std::uint8_t> &left_bgr,
-                     const SentechFfsCameraModel &camera, SentechFfsResult &result) {
-    constexpr int kPointStep = 1;
-    constexpr float kMinDepthM = 0.1F;
-    constexpr float kMaxDepthM = 10.0F;
-    const std::size_t image_bytes = static_cast<std::size_t>(disparity.width) * disparity.height * 3U;
-    if (camera.fx <= 0.0F || camera.fy <= 0.0F || camera.baseline_m <= 0.0F ||
-        left_bgr.size() != image_bytes)
-        return;
-
-    result.xyz.reserve(static_cast<std::size_t>(disparity.width / kPointStep) *
-                       static_cast<std::size_t>(disparity.height / kPointStep) * 3U);
-    result.rgb.reserve(result.xyz.capacity());
-    for (int y = 0; y < disparity.height; y += kPointStep) {
-        for (int x = 0; x < disparity.width; x += kPointStep) {
-            const std::size_t pixel = static_cast<std::size_t>(y) * disparity.width + x;
-            const float disparity_px = disparity.values.at(pixel);
-            if (!std::isfinite(disparity_px) || disparity_px <= 0.0F ||
-                static_cast<float>(x) - disparity_px < 0.0F)
-                continue;
-            const float z = camera.fx * camera.baseline_m / disparity_px;
-            if (!std::isfinite(z) || z < kMinDepthM || z > kMaxDepthM)
-                continue;
-            result.xyz.insert(result.xyz.end(), {
-                (static_cast<float>(x) - camera.cx) * z / camera.fx,
-                -(static_cast<float>(y) - camera.cy) * z / camera.fy,
-                z,
-            });
-            const std::size_t bgr = 3U * pixel;
-            result.rgb.insert(result.rgb.end(), {left_bgr[bgr + 2], left_bgr[bgr + 1],
-                                                  left_bgr[bgr]});
-        }
-    }
+io::StereoCalibration makeCameraCalibration(const SentechFfsCameraModel &camera) {
+    io::StereoCalibration calibration;
+    calibration.left.width = camera.width;
+    calibration.left.height = camera.height;
+    calibration.left.fx = camera.fx;
+    calibration.left.fy = camera.fy;
+    calibration.left.cx = camera.cx;
+    calibration.left.cy = camera.cy;
+    calibration.right = calibration.left;
+    calibration.baseline_m = camera.baseline_m;
+    return calibration;
 }
 
 io::BgrFrame visualizeDisparity(const DisparityFrame &disparity, const io::BgrFrame &source) {
@@ -214,7 +192,7 @@ void SentechFfsPipeline::start() {
                 auto result = std::make_shared<SentechFfsResult>();
                 result->visualization = visualizeDisparity(disparity, left);
                 if (has_camera_model)
-                    buildPointCloud(disparity, input.left_bgr, camera_model, *result);
+                    result->gpu_cloud = runner.makeLiveCloud(makeCameraCalibration(camera_model));
                 result->left_frame_id = left.frame_id;
                 result->right_frame_id = right.frame_id;
                 result->timing = disparity.timing;

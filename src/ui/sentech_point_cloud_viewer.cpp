@@ -1,30 +1,80 @@
 #include "ffs_viewer/ui/sentech_point_cloud_viewer.hpp"
 
 #include <GL/glew.h>
+#include <cuda_gl_interop.h>
 #include <imgui.h>
 
+#include <cuda_runtime.h>
+
 #include <algorithm>
+#include <stdexcept>
 
 namespace ffs_viewer::ui {
 
 SentechPointCloudViewer::SentechPointCloudViewer() {
     glGenBuffers(1, &xyz_vbo_);
     glGenBuffers(1, &rgb_vbo_);
+    glGenBuffers(1, &cuda_vbo_);
 }
 
 SentechPointCloudViewer::~SentechPointCloudViewer() noexcept {
+    if (cuda_resource_ != nullptr)
+        cudaGraphicsUnregisterResource(static_cast<cudaGraphicsResource *>(cuda_resource_));
     glDeleteBuffers(1, &xyz_vbo_);
     glDeleteBuffers(1, &rgb_vbo_);
+    glDeleteBuffers(1, &cuda_vbo_);
 }
 
 void SentechPointCloudViewer::update(const std::vector<float> &xyz,
                                      const std::vector<std::uint8_t> &rgb) {
+    if (cuda_resource_ != nullptr) {
+        cudaGraphicsUnregisterResource(static_cast<cudaGraphicsResource *>(cuda_resource_));
+        cuda_resource_ = nullptr;
+    }
+    use_cuda_vbo_ = false;
     point_count_ = static_cast<int>(xyz.size() / 3U);
     glBindBuffer(GL_ARRAY_BUFFER, xyz_vbo_);
     glBufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(xyz.size() * sizeof(float)),
                  xyz.data(), GL_DYNAMIC_DRAW);
     glBindBuffer(GL_ARRAY_BUFFER, rgb_vbo_);
     glBufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(rgb.size()), rgb.data(), GL_DYNAMIC_DRAW);
+}
+
+void SentechPointCloudViewer::updateCuda(const ffs_viewer::geometry::LiveCloudFrame &cloud) {
+    if (!cloud.valid())
+        return;
+    if (cuda_resource_ != nullptr) {
+        cudaGraphicsUnregisterResource(static_cast<cudaGraphicsResource *>(cuda_resource_));
+        cuda_resource_ = nullptr;
+    }
+    glBindBuffer(GL_ARRAY_BUFFER, cuda_vbo_);
+    glBufferData(GL_ARRAY_BUFFER,
+                 static_cast<GLsizeiptr>(cloud.point_count) *
+                     sizeof(ffs_viewer::geometry::GpuPointVertex),
+                 nullptr, GL_DYNAMIC_DRAW);
+    cudaGraphicsResource *resource = nullptr;
+    if (cudaGraphicsGLRegisterBuffer(&resource, cuda_vbo_, cudaGraphicsRegisterFlagsWriteDiscard) !=
+        cudaSuccess)
+        throw std::runtime_error("CUDA failed to register live point-cloud VBO");
+    cuda_resource_ = resource;
+    if (cudaGraphicsMapResources(1, &resource, 0) != cudaSuccess)
+        throw std::runtime_error("CUDA failed to map live point-cloud VBO");
+    void *device_vertices = nullptr;
+    std::size_t bytes = 0;
+    if (cudaGraphicsResourceGetMappedPointer(&device_vertices, &bytes, resource) != cudaSuccess ||
+        bytes < static_cast<std::size_t>(cloud.point_count) *
+                    sizeof(ffs_viewer::geometry::GpuPointVertex))
+        throw std::runtime_error("CUDA live point-cloud VBO has unexpected size");
+    if (cloud.ready_event != nullptr && cudaStreamWaitEvent(0, cloud.ready_event, 0) != cudaSuccess)
+        throw std::runtime_error("CUDA failed to wait for live point-cloud projection");
+    if (cudaMemcpyAsync(device_vertices, cloud.d_vertices,
+                        static_cast<std::size_t>(cloud.point_count) *
+                            sizeof(ffs_viewer::geometry::GpuPointVertex),
+                        cudaMemcpyDeviceToDevice, 0) != cudaSuccess ||
+        cudaStreamSynchronize(0) != cudaSuccess || cudaGraphicsUnmapResources(1, &resource, 0) != cudaSuccess)
+        throw std::runtime_error("CUDA failed to upload live point-cloud VBO");
+    point_count_ = cloud.point_count;
+    use_cuda_vbo_ = true;
 }
 
 void SentechPointCloudViewer::resetToLeftCameraView() {
@@ -103,10 +153,17 @@ void SentechPointCloudViewer::render(const DrawRequest &request) const {
     glPointSize(2.0F);
     glEnableClientState(GL_VERTEX_ARRAY);
     glEnableClientState(GL_COLOR_ARRAY);
-    glBindBuffer(GL_ARRAY_BUFFER, xyz_vbo_);
-    glVertexPointer(3, GL_FLOAT, 0, nullptr);
-    glBindBuffer(GL_ARRAY_BUFFER, rgb_vbo_);
-    glColorPointer(3, GL_UNSIGNED_BYTE, 0, nullptr);
+    if (use_cuda_vbo_) {
+        glBindBuffer(GL_ARRAY_BUFFER, cuda_vbo_);
+        glVertexPointer(3, GL_FLOAT, sizeof(ffs_viewer::geometry::GpuPointVertex), nullptr);
+        glColorPointer(4, GL_UNSIGNED_BYTE, sizeof(ffs_viewer::geometry::GpuPointVertex),
+                       reinterpret_cast<void *>(3 * sizeof(float)));
+    } else {
+        glBindBuffer(GL_ARRAY_BUFFER, xyz_vbo_);
+        glVertexPointer(3, GL_FLOAT, 0, nullptr);
+        glBindBuffer(GL_ARRAY_BUFFER, rgb_vbo_);
+        glColorPointer(3, GL_UNSIGNED_BYTE, 0, nullptr);
+    }
     glDrawArrays(GL_POINTS, 0, point_count_);
     glDisableClientState(GL_COLOR_ARRAY);
     glDisableClientState(GL_VERTEX_ARRAY);

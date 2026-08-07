@@ -8,8 +8,11 @@
 #include "ffs_viewer/calibration/stereo_charuco_calibrator.hpp"
 #include "ffs_viewer/calibration/stereo_rectifier.hpp"
 #include "ffs_viewer/inference/sentech_ffs_pipeline.hpp"
+#include "ffs_viewer/inference/sentech_final_capture_pipeline.hpp"
 #include "ffs_viewer/io/sentech_stereo_source.hpp"
 #include "ffs_viewer/ui/sentech_point_cloud_viewer.hpp"
+#include "opengl_point_cloud_viewer.hpp"
+#include <opencv2/imgproc.hpp>
 #include <algorithm>
 #include <atomic>
 #include <array>
@@ -67,6 +70,24 @@ class ImageTexture {
                      GL_UNSIGNED_BYTE, frame.pixels.data());
         width_ = frame.width;
         height_ = frame.height;
+    }
+
+    void upload(const cv::Mat &image) {
+        if (image.empty() || image.type() != CV_8UC3)
+            throw std::invalid_argument("Image texture upload requires a BGR8 image");
+        const cv::Mat continuous = image.isContinuous() ? image : image.clone();
+        if (texture_ == 0)
+            glGenTextures(1, &texture_);
+        glBindTexture(GL_TEXTURE_2D, texture_);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB8, continuous.cols, continuous.rows, 0, GL_BGR,
+                     GL_UNSIGNED_BYTE, continuous.data);
+        width_ = continuous.cols;
+        height_ = continuous.rows;
     }
 
     bool valid() const {
@@ -155,6 +176,26 @@ void drawLivePointCloud(ffs_viewer::ui::SentechPointCloudViewer &viewer,
     viewer.draw(ImGui::GetWindowDrawList(), canvas_origin, canvas_size, io.DisplayFramebufferScale.x,
                 io.DisplayFramebufferScale.y, io.DisplaySize.y * io.DisplayFramebufferScale.y);
     ImGui::Text("Points: %d | left-drag orbit, right-drag pan, wheel zoom", viewer.pointCount());
+    ImGui::End();
+}
+
+void drawFinalPointCloud(ffs_viewer::ui::OpenGLPointCloudViewer &viewer) {
+    ImGui::Begin("Live Point Cloud");
+    ImGui::Text("FoundationStereo final: %d GPU vertices", viewer.pointCount());
+    if (viewer.meshAreaM2() > 0.0F)
+        ImGui::Text("Largest selected surface: %.1f cm2", viewer.meshAreaM2() * 10000.0F);
+    const ImVec2 available = ImGui::GetContentRegionAvail();
+    const ImVec2 canvas_size(std::max(1.0F, available.x), std::max(1.0F, available.y));
+    const ImVec2 canvas_origin = ImGui::GetCursorScreenPos();
+    ImGui::InvisibleButton("##sentech-final-cloud-canvas", canvas_size,
+                           ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonRight);
+    const bool hovered = ImGui::IsItemHovered();
+    const ImGuiIO &io = ImGui::GetIO();
+    viewer.interact(hovered, ImGui::IsMouseDragging(ImGuiMouseButton_Left),
+                    ImGui::IsMouseDragging(ImGuiMouseButton_Right), io.MouseDelta.x, io.MouseDelta.y,
+                    hovered ? io.MouseWheel : 0.0F);
+    viewer.draw(ImGui::GetWindowDrawList(), canvas_origin, canvas_size, io.DisplayFramebufferScale.x,
+                io.DisplayFramebufferScale.y, io.DisplaySize.y * io.DisplayFramebufferScale.y);
     ImGui::End();
 }
 
@@ -333,9 +374,12 @@ int main() {
             std::optional<ffs_viewer::calibration::StereoCharucoCalibrationResult> calibration_result;
             ffs_viewer::calibration::StereoRectifier stereo_rectifier;
             ffs_viewer::inference::SentechFfsPipeline ffs_pipeline(FFS_SENTECH_FFS_ENGINE_DIR);
+            ffs_viewer::inference::SentechFinalCapturePipeline final_capture_pipeline(
+                FFS_SENTECH_FS_ENGINE_DIR);
             bool show_rectified_images = false;
             ffs_viewer::io::BgrFrame rectified_left_frame;
             ffs_viewer::io::BgrFrame rectified_right_frame;
+            std::optional<ffs_viewer::calibration::RectifiedStereoCamera> active_rectified_camera;
             const std::filesystem::path calibration_result_path = "sentech_stereo_calibration.json";
             std::string calibration_capture_status = "No calibration pair captured";
             std::string image_display_status = "Showing raw camera images";
@@ -360,8 +404,39 @@ int main() {
             ImageTexture calibration_right_texture;
             ImageTexture disparity_texture;
             ffs_viewer::ui::SentechPointCloudViewer point_cloud_viewer;
+            ImageTexture final_left_texture;
+            ImageTexture final_right_texture;
+            ImageTexture final_mask_texture;
+            ffs_viewer::ui::OpenGLPointCloudViewer final_point_cloud_viewer;
+            final_point_cloud_viewer.setMaxDepth(10.0F);
+            std::shared_ptr<const ffs_viewer::inference::SentechFinalCaptureResult> displayed_final_capture;
+            bool show_final_mask_editor = false;
+            bool show_final_capture_view = false;
+            cv::Mat final_mask_source;
+            cv::Mat final_mask;
+            int final_mask_brush_radius = 4;
+            bool final_mask_stroke_active = false;
+            float final_mesh_depth_threshold_cm = 1.0F;
+            cv::Point previous_final_mask_pixel;
             std::uint64_t uploaded_disparity_left_frame_id = 0;
             std::uint64_t uploaded_disparity_right_frame_id = 0;
+
+            auto refreshFinalMask = [&] {
+                if (!displayed_final_capture || final_mask_source.empty() || final_mask.empty())
+                    return;
+                cv::Mat overlay = final_mask_source.clone();
+                cv::Mat green(final_mask_source.size(), final_mask_source.type(), cv::Scalar(0, 255, 0));
+                green.copyTo(overlay, final_mask);
+                cv::Mat blended;
+                cv::addWeighted(final_mask_source, 0.8, overlay, 0.2, 0.0, blended);
+                final_mask_texture.upload(blended);
+
+                auto cloud = displayed_final_capture->cloud;
+                cloud.display_step = 1; // Draw is intentionally full 608 x 512 resolution.
+                cloud.mesh_depth_threshold_m = 0.01F * final_mesh_depth_threshold_cm;
+                final_point_cloud_viewer.updateCudaFinal(cloud, final_mask.data, final_mask.cols,
+                                                         final_mask.rows, true);
+            };
 
             while (!glfwWindowShouldClose(window)) {
                 glfwPollEvents();
@@ -417,6 +492,7 @@ int main() {
                             display_right = &rectified_right_frame;
                             const auto rectified_camera =
                                 stereo_rectifier.rectifiedCamera(display_left->width, display_left->height);
+                            active_rectified_camera = rectified_camera;
                             ffs_pipeline.setCameraModel({
                                 rectified_camera.width,
                                 rectified_camera.height,
@@ -457,6 +533,14 @@ int main() {
                 if (ImGui::Button("Start") && !capture.running()) {
                     try {
                         capture.start();
+                        show_final_capture_view = false;
+                        show_final_mask_editor = false;
+                        if (show_rectified_images && stereo_rectifier.hasCalibration() &&
+                            !ffs_pipeline.running()) {
+                            ffs_pipeline.start();
+                            image_display_status =
+                                "Camera acquisition and live FFS restarted";
+                        }
                     } catch (const std::exception &error) {
                         std::cerr << "Start failed: " << error.what() << '\n';
                     }
@@ -489,6 +573,42 @@ int main() {
                     }
                 }
                 ImGui::TextWrapped("%s", image_display_status.c_str());
+                if (ImGui::Button("Capture")) {
+                    if (show_final_mask_editor) {
+                        image_display_status =
+                            "Close the Draw window before taking another final capture";
+                    } else if (!show_rectified_images || !rectified_left_frame.valid() ||
+                        !rectified_right_frame.valid() || !active_rectified_camera.has_value()) {
+                        image_display_status =
+                            "Enable rectified stereo and wait for a valid frame before Capture";
+                    } else {
+                        // The final FS run owns the GPU.  Its input pair has already been
+                        // copied by capture(), so it is safe to stop both live workers here.
+                        ffs_pipeline.stop();
+                        capture.stop();
+                        try {
+                            final_capture_pipeline.capture(rectified_left_frame, rectified_right_frame,
+                                                           *active_rectified_camera);
+                            image_display_status =
+                                "FoundationStereo final capture started; live FFS and cameras stopped";
+                        } catch (const std::exception &error) {
+                            image_display_status = "Final capture error: " + std::string(error.what());
+                        }
+                    }
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("Draw") && show_final_capture_view &&
+                    displayed_final_capture && !displayed_final_capture->left.pixels.empty()) {
+                    const auto &frozen_left = displayed_final_capture->left;
+                    final_mask_source = cv::Mat(frozen_left.height, frozen_left.width, CV_8UC3,
+                                                 const_cast<std::uint8_t *>(frozen_left.pixels.data()))
+                                            .clone();
+                    final_mask = cv::Mat::zeros(final_mask_source.size(), CV_8UC1);
+                    final_mask_stroke_active = false;
+                    show_final_mask_editor = true;
+                    refreshFinalMask();
+                }
+                ImGui::TextWrapped("%s", final_capture_pipeline.status().c_str());
                 ImGui::End();
 
                 ImGui::Begin("Calibration");
@@ -577,19 +697,95 @@ int main() {
                 ImGui::Separator();
                 ImGui::End();
 
-                drawStereoView(left_texture, right_texture);
+                const auto final_capture = final_capture_pipeline.latestResult();
+                if (!show_final_mask_editor && final_capture && final_capture != displayed_final_capture) {
+                    final_point_cloud_viewer.resetToLeftCameraView();
+                    final_point_cloud_viewer.updateCudaFinal(final_capture->cloud);
+                    final_left_texture.upload(final_capture->left);
+                    final_right_texture.upload(final_capture->right);
+                    disparity_texture.upload(final_capture->disparity_visualization);
+                    displayed_final_capture = final_capture;
+                    show_final_capture_view = true;
+                }
+
+                const bool showing_final_capture =
+                    show_final_capture_view && displayed_final_capture != nullptr;
+                drawStereoView(showing_final_capture ? final_left_texture : left_texture,
+                               showing_final_capture ? final_right_texture : right_texture);
                 if (show_rectified_images) {
                     const auto disparity = ffs_pipeline.latestResult();
                     if (disparity &&
                         (disparity->left_frame_id != uploaded_disparity_left_frame_id ||
                          disparity->right_frame_id != uploaded_disparity_right_frame_id)) {
                         disparity_texture.upload(disparity->visualization);
-                        point_cloud_viewer.update(disparity->xyz, disparity->rgb);
+                        if (disparity->gpu_cloud.valid())
+                            point_cloud_viewer.updateCuda(disparity->gpu_cloud);
                         uploaded_disparity_left_frame_id = disparity->left_frame_id;
                         uploaded_disparity_right_frame_id = disparity->right_frame_id;
                     }
-                    drawLiveDisparity(disparity_texture, ffs_pipeline.status());
-                    drawLivePointCloud(point_cloud_viewer, ffs_pipeline.status());
+                    drawLiveDisparity(disparity_texture,
+                                      showing_final_capture ? "FoundationStereo final disparity"
+                                                            : ffs_pipeline.status());
+                    if (!showing_final_capture)
+                        drawLivePointCloud(point_cloud_viewer, ffs_pipeline.status());
+                }
+                if (showing_final_capture)
+                    drawFinalPointCloud(final_point_cloud_viewer);
+                if (show_final_mask_editor) {
+                    ImGui::Begin("Final Surface Draw", &show_final_mask_editor);
+                    ImGui::TextUnformatted("Frozen 608 x 512 image; Draw uses every disparity pixel.");
+                    ImGui::SameLine();
+                    if (ImGui::Button("Clear mask")) {
+                        final_mask.setTo(0);
+                        refreshFinalMask();
+                    }
+                    ImGui::SameLine();
+                    ImGui::SetNextItemWidth(180.0F);
+                    ImGui::SliderInt("Brush radius", &final_mask_brush_radius, 1, 20, "%d px");
+                    if (ImGui::SliderFloat("Mesh depth threshold", &final_mesh_depth_threshold_cm, 0.1F,
+                                           10.0F, "%.1f cm")) {
+                        refreshFinalMask();
+                    }
+                    if (final_mask_texture.valid()) {
+                        const ImVec2 available = ImGui::GetContentRegionAvail();
+                        const float scale = std::min(available.x / static_cast<float>(final_mask_texture.width()),
+                                                     available.y / static_cast<float>(final_mask_texture.height()));
+                        const ImVec2 image_size(static_cast<float>(final_mask_texture.width()) * scale,
+                                                 static_cast<float>(final_mask_texture.height()) * scale);
+                        const ImVec2 image_pos = ImGui::GetCursorScreenPos();
+                        ImGui::Image(final_mask_texture.id(), image_size);
+                        ImGui::SetCursorScreenPos(image_pos);
+                        ImGui::InvisibleButton("##sentech-final-mask-canvas", image_size,
+                                               ImGuiButtonFlags_MouseButtonLeft |
+                                                   ImGuiButtonFlags_MouseButtonRight);
+                        const bool hovered = ImGui::IsItemHovered();
+                        const bool paint = hovered && ImGui::IsMouseDown(ImGuiMouseButton_Left);
+                        const bool erase = hovered && ImGui::IsMouseDown(ImGuiMouseButton_Right);
+                        if (paint || erase) {
+                            const ImVec2 mouse = ImGui::GetMousePos();
+                            const cv::Point pixel(
+                                std::clamp(static_cast<int>((mouse.x - image_pos.x) / image_size.x *
+                                                            final_mask.cols),
+                                           0, final_mask.cols - 1),
+                                std::clamp(static_cast<int>((mouse.y - image_pos.y) / image_size.y *
+                                                            final_mask.rows),
+                                           0, final_mask.rows - 1));
+                            const cv::Scalar value = erase ? cv::Scalar(0) : cv::Scalar(255);
+                            if (final_mask_stroke_active) {
+                                cv::line(final_mask, previous_final_mask_pixel, pixel, value,
+                                         2 * final_mask_brush_radius + 1, cv::LINE_8);
+                            } else {
+                                cv::circle(final_mask, pixel, final_mask_brush_radius, value, cv::FILLED,
+                                           cv::LINE_8);
+                            }
+                            previous_final_mask_pixel = pixel;
+                            final_mask_stroke_active = true;
+                            refreshFinalMask();
+                        } else {
+                            final_mask_stroke_active = false;
+                        }
+                    }
+                    ImGui::End();
                 }
                 if (show_calibration_pair && !calibration_pair_history.empty()) {
                     if (!uploaded_calibration_pair_index.has_value() ||

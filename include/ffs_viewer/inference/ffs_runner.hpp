@@ -1,5 +1,6 @@
 #pragma once
 
+#include "ffs_viewer/geometry/live_cloud_processor.hpp"
 #include "ffs_viewer/io/stereo_source.hpp"
 
 #include <memory>
@@ -38,6 +39,10 @@ public:
     // runtime's RGB preprocessing kernel performs the BGR-to-RGB channel reorder.
     DisparityFrame inferBgr(int width, int height, const std::vector<std::uint8_t>& left_bgr,
                             const std::vector<std::uint8_t>& right_bgr);
+
+    // Must be called immediately after inferBgr(). Projects the current GPU
+    // disparity and left BGR input directly into CUDA-resident GL vertices.
+    geometry::LiveCloudFrame makeLiveCloud(const io::StereoCalibration& calibration);
 
     int modelWidth() const;
     int modelHeight() const;

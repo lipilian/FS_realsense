@@ -186,8 +186,8 @@ FinalCloudProcessor::~FinalCloudProcessor() = default;
 
 FinalCloudFrame FinalCloudProcessor::process(float* d_disparity, const float* d_left_input, cudaStream_t stream,
                                              const io::StereoCalibration& calibration,
-                                             int source_width, int source_height, float z_max_m,
-                                             const std::function<void()>& on_denoise) {
+                                             int source_width, int source_height, int left_row_offset,
+                                             float z_max_m, const std::function<void()>& on_denoise) {
     if (source_width <= 0 || source_height <= 0 || z_max_m <= 0.0F) throw std::invalid_argument("invalid final-cloud parameters");
     const float sx = static_cast<float>(impl_->width) / source_width;
     const float sy = static_cast<float>(impl_->height) / source_height;
@@ -222,7 +222,7 @@ FinalCloudFrame FinalCloudProcessor::process(float* d_disparity, const float* d_
     result.d_xyz = impl_->d_xyz;
     result.d_valid = impl_->d_valid;
     result.d_left_gray = d_left_input;
-    result.left_row_offset = 4 * impl_->width;
+    result.left_row_offset = left_row_offset;
     result.point_count = impl_->count;
     result.d_mesh_cell_area = impl_->d_mesh_cell_area;
     result.d_mesh_parent = impl_->d_mesh_parent;

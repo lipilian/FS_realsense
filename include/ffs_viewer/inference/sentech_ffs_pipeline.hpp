@@ -25,8 +25,7 @@ struct SentechFfsResult {
     std::uint64_t left_frame_id = 0;
     std::uint64_t right_frame_id = 0;
     InferenceTiming timing;
-    std::vector<float> xyz;
-    std::vector<std::uint8_t> rgb;
+    geometry::LiveCloudFrame gpu_cloud;
 };
 
 // Runs FFS on the latest rectified Sentech pair. Inputs are deliberately not

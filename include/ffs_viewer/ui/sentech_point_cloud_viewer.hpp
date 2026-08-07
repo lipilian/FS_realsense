@@ -1,5 +1,7 @@
 #pragma once
 
+#include "ffs_viewer/geometry/live_cloud_processor.hpp"
+
 #include <cstdint>
 #include <vector>
 
@@ -18,6 +20,7 @@ class SentechPointCloudViewer final {
     SentechPointCloudViewer &operator=(const SentechPointCloudViewer &) = delete;
 
     void update(const std::vector<float> &xyz, const std::vector<std::uint8_t> &rgb);
+    void updateCuda(const ffs_viewer::geometry::LiveCloudFrame &cloud);
     void resetToLeftCameraView();
     void interact(bool hovered, bool orbiting, bool panning, float delta_x, float delta_y,
                   float wheel);
@@ -49,6 +52,9 @@ class SentechPointCloudViewer final {
 
     unsigned int xyz_vbo_ = 0;
     unsigned int rgb_vbo_ = 0;
+    unsigned int cuda_vbo_ = 0;
+    void *cuda_resource_ = nullptr;
+    bool use_cuda_vbo_ = false;
     int point_count_ = 0;
     Camera camera_;
     DrawRequest draw_request_;

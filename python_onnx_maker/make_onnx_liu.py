@@ -13,8 +13,8 @@ class FoundationStereoOnnx(FoundationStereo):
         return disp
 cfg = OmegaConf.load("./weights/23-51-11/cfg.yaml")
 cfg['vit_size'] = 'vitl'
-cfg['height'] = 608 # 608 / 32 = 19 
-cfg['width'] = 960 # 960 / 32 = 30
+cfg['height'] = 512 # 608 / 32 = 19, 512 * 1.5 for sentech
+cfg['width'] = 608 # 960 / 32 = 30, 608 * 1.5 for sentech
 model = FoundationStereoOnnx(cfg)
 ckpt = torch.load("./weights/23-51-11/model_best_bp2.pth", weights_only=False, map_location = 'cpu') # except model tensor, it also contains trainning metadata.
 model.load_state_dict(ckpt['model'])
@@ -26,7 +26,7 @@ right_img = torch.randn(1, 3, cfg.height, cfg.width).cuda().float()
 torch.onnx.export(
         model,
         (left_img, right_img),
-        '/home/liu4000/Desktop/FS_realsense/models/fs_960x608_iters32/fs.onnx',
+        '/home/liu4000/Desktop/FS_realsense/models/fs_608x512_iters32/fs.onnx',
         input_names = ['left', 'right'],
         output_names = ['disp'],
         dynamo = False,

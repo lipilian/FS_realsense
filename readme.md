@@ -147,7 +147,7 @@ python3 -m pip install -v --no-build-isolation \
 pip install -r requirements.txt
 ```
 - test demo
-chaneg run_demo.py line 63 to 
+change run_demo.py line 63 to 
 ```
 ckpt = torch.load(ckpt_dir, weights_only=False)
 ```

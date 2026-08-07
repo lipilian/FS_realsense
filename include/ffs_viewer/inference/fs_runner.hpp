@@ -6,12 +6,13 @@
 #include <functional>
 #include <memory>
 #include <string>
+#include <vector>
 
 namespace ffs_viewer::inference {
 
-// Adapter for the fixed 960x608, 32-iteration FoundationStereo TensorRT engine.
-// It accepts D455 Y8 images, replicates the monochrome samples into RGB, resizes
-// content to 960x600, and applies FoundationStereo's 4-row top/bottom padding.
+// Adapter for fixed-resolution FoundationStereo TensorRT engines. The legacy
+// 960x608 engine retains its 4-row top/bottom padding; the Sentech 608x512
+// engine uses its full image height without padding.
 class FsRunner final {
 public:
     // Accepts either an fs.engine path or the directory containing fs.engine.
@@ -27,6 +28,12 @@ public:
                                          const io::StereoCalibration& calibration,
                                          float z_max_m,
                                          const std::function<void()>& on_denoise);
+    geometry::FinalCloudFrame inferFinalBgr(int width, int height,
+                                            const std::vector<std::uint8_t>& left_bgr,
+                                            const std::vector<std::uint8_t>& right_bgr,
+                                            const io::StereoCalibration& calibration,
+                                            float z_max_m,
+                                            const std::function<void()>& on_denoise);
     // Returns an unpadded 960x600 disparity map in model-input pixel units.
     DisparityFrame infer(const io::StereoFrame& stereo);
 

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "ffs_viewer/geometry/gpu_point_vertex.hpp"
 #include "ffs_viewer/inference/ffs_runner.hpp"
 #include "ffs_viewer/io/stereo_source.hpp"
 
@@ -31,16 +32,6 @@ struct FinalCloudFrame {
     int* d_mesh_best_area_bits = nullptr;
 };
 
-struct GpuPointVertex {
-    float x;
-    float y;
-    float z;
-    std::uint8_t r;
-    std::uint8_t g;
-    std::uint8_t b;
-    std::uint8_t a;
-};
-
 void writeFinalCloudVertices(const FinalCloudFrame& cloud, GpuPointVertex* d_vertices,
                              cudaStream_t stream);
 int finalCloudMeshIndexCount(const FinalCloudFrame& cloud);
@@ -63,7 +54,7 @@ class FinalCloudProcessor final {
 
     FinalCloudFrame process(float* d_disparity, const float* d_left_input, cudaStream_t stream,
                             const io::StereoCalibration& calibration,
-                            int source_width, int source_height,
+                            int source_width, int source_height, int left_row_offset,
                             float z_max_m,
                             const std::function<void()>& on_denoise);
 
