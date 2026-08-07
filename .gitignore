@@ -16,3 +16,4 @@ build/
 
 # Runtime ChArUco board settings saved by sentech_stereo.
 sentech_stereo_charuco.json
+sentech_stereo_calibration.json

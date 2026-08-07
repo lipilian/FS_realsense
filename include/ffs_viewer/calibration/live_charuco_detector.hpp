@@ -5,6 +5,7 @@
 #include <filesystem>
 #include <memory>
 #include <string>
+#include <vector>
 
 namespace ffs_viewer::calibration {
 
@@ -16,10 +17,17 @@ struct CharucoBoardConfig {
     std::string dictionary_name = "DICT_4X4_250";
 };
 
+struct CharucoCorner {
+    int id = -1;
+    float x = 0.0F;
+    float y = 0.0F;
+};
+
 struct CharucoDetection {
     io::BgrFrame annotated_frame;
     int marker_count = 0;
     int corner_count = 0;
+    std::vector<CharucoCorner> corners;
 
     bool valid() const {
         return corner_count >= 4;

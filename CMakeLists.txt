@@ -121,11 +121,17 @@ if(FFS_VIEWER_BUILD_SENTECH_DUAL_CONNECT)
   add_executable(sentech_stereo
     apps/sentech_stereo/main.cpp
     src/calibration/live_charuco_detector.cpp
+    src/calibration/stereo_charuco_calibrator.cpp
+    src/calibration/stereo_rectifier.cpp
+    src/inference/ffs_runner.cpp
+    src/inference/sentech_ffs_pipeline.cpp
     src/io/sentech_stereo_source.cpp
+    src/ui/sentech_point_cloud_viewer.cpp
   )
   target_compile_features(sentech_stereo PRIVATE cxx_std_20)
   target_compile_definitions(sentech_stereo PRIVATE
     FFS_SENTECH_GENTL_DIRECTORY="${FFS_SENTECH_ROOT}/lib"
+    FFS_SENTECH_FFS_ENGINE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/models/ffs_608x512"
   )
   target_include_directories(sentech_stereo PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/include"
@@ -139,6 +145,7 @@ if(FFS_VIEWER_BUILD_SENTECH_DUAL_CONNECT)
     "${FFS_SENTECH_IP_LIBRARY}"
     "${FFS_SENTECH_TURBOJPEG_LIBRARY}"
     ${OpenCV_LIBS}
+    ffs::runtime
     sentech_imgui
     glfw
     GLEW::GLEW

@@ -5,7 +5,11 @@
 #include <imgui_impl_opengl3.h>
 
 #include "ffs_viewer/calibration/live_charuco_detector.hpp"
+#include "ffs_viewer/calibration/stereo_charuco_calibrator.hpp"
+#include "ffs_viewer/calibration/stereo_rectifier.hpp"
+#include "ffs_viewer/inference/sentech_ffs_pipeline.hpp"
 #include "ffs_viewer/io/sentech_stereo_source.hpp"
+#include "ffs_viewer/ui/sentech_point_cloud_viewer.hpp"
 #include <algorithm>
 #include <atomic>
 #include <array>
@@ -101,10 +105,57 @@ struct CalibrationPair {
     std::uint64_t left_timestamp_ns = 0;
     std::uint64_t right_timestamp_ns = 0;
     std::uint64_t timestamp_delta_ns = 0;
+    ffs_viewer::calibration::CharucoBoardConfig board_config;
 };
+
+bool sameBoardConfig(const ffs_viewer::calibration::CharucoBoardConfig &a,
+                     const ffs_viewer::calibration::CharucoBoardConfig &b) {
+    return a.squares_x == b.squares_x && a.squares_y == b.squares_y &&
+           a.square_length_m == b.square_length_m && a.marker_length_m == b.marker_length_m &&
+           a.dictionary_name == b.dictionary_name;
+}
 
 std::uint64_t timestampDifference(std::uint64_t left, std::uint64_t right) {
     return left >= right ? left - right : right - left;
+}
+
+void drawLiveDisparity(const ImageTexture &disparity, const std::string &status) {
+    ImGui::Begin("Live Disparity");
+    ImGui::TextWrapped("%s", status.c_str());
+    if (!disparity.valid()) {
+        ImGui::TextUnformatted("Waiting for the first FFS disparity frame.");
+        ImGui::End();
+        return;
+    }
+
+    const ImVec2 available = ImGui::GetContentRegionAvail();
+    const float scale = std::min(available.x / static_cast<float>(disparity.width()),
+                                 available.y / static_cast<float>(disparity.height()));
+    ImGui::Image(disparity.id(), ImVec2(static_cast<float>(disparity.width()) * scale,
+                                        static_cast<float>(disparity.height()) * scale));
+    ImGui::End();
+}
+
+void drawLivePointCloud(ffs_viewer::ui::SentechPointCloudViewer &viewer,
+                        const std::string &status) {
+    ImGui::Begin("Live Point Cloud");
+    ImGui::TextWrapped("%s", status.c_str());
+    ImGui::SameLine();
+    if (ImGui::Button("Reset View"))
+        viewer.resetToLeftCameraView();
+
+    const ImVec2 available = ImGui::GetContentRegionAvail();
+    const ImVec2 canvas_size(std::max(1.0F, available.x), std::max(1.0F, available.y - 22.0F));
+    const ImVec2 canvas_origin = ImGui::GetCursorScreenPos();
+    ImGui::InvisibleButton("##sentech-point-cloud-canvas", canvas_size);
+    const ImGuiIO &io = ImGui::GetIO();
+    viewer.interact(ImGui::IsItemHovered(), ImGui::IsMouseDragging(ImGuiMouseButton_Left),
+                    ImGui::IsMouseDragging(ImGuiMouseButton_Right), io.MouseDelta.x, io.MouseDelta.y,
+                    io.MouseWheel);
+    viewer.draw(ImGui::GetWindowDrawList(), canvas_origin, canvas_size, io.DisplayFramebufferScale.x,
+                io.DisplayFramebufferScale.y, io.DisplaySize.y * io.DisplayFramebufferScale.y);
+    ImGui::Text("Points: %d | left-drag orbit, right-drag pan, wheel zoom", viewer.pointCount());
+    ImGui::End();
 }
 
 void drawStereoView(const ImageTexture &left, const ImageTexture &right) {
@@ -174,6 +225,12 @@ bool drawCalibrationPair(const ImageTexture &left, const ImageTexture &right,
                 pair.left.corner_count);
     ImGui::Text("Right: %d markers, %d ChArUco corners", pair.right.marker_count,
                 pair.right.corner_count);
+    const auto matched_corner_count = std::count_if(
+        pair.left.corners.begin(), pair.left.corners.end(), [&](const auto &left_corner) {
+            return std::any_of(pair.right.corners.begin(), pair.right.corners.end(),
+                               [&](const auto &right_corner) { return right_corner.id == left_corner.id; });
+        });
+    ImGui::Text("Matched ChArUco corners: %zu", matched_corner_count);
     ImGui::Separator();
 
     if (!left.valid() || !right.valid()) {
@@ -192,8 +249,28 @@ bool drawCalibrationPair(const ImageTexture &left, const ImageTexture &right,
     const ImVec2 right_size(static_cast<float>(right.width()) * scale,
                             static_cast<float>(right.height()) * scale);
     ImGui::Image(left.id(), left_size);
+    const ImVec2 left_image_origin = ImGui::GetItemRectMin();
     ImGui::SameLine(0.F, spacing);
     ImGui::Image(right.id(), right_size);
+    const ImVec2 right_image_origin = ImGui::GetItemRectMin();
+
+    ImDrawList *draw_list = ImGui::GetWindowDrawList();
+    for (const auto &left_corner : pair.left.corners) {
+        const auto right_it = std::find_if(
+            pair.right.corners.begin(), pair.right.corners.end(), [&](const auto &right_corner) {
+                return right_corner.id == left_corner.id;
+            });
+        if (right_it == pair.right.corners.end())
+            continue;
+
+        const ImVec2 left_point(left_image_origin.x + left_corner.x * scale,
+                                left_image_origin.y + left_corner.y * scale);
+        const ImVec2 right_point(right_image_origin.x + right_it->x * scale,
+                                 right_image_origin.y + right_it->y * scale);
+        draw_list->AddLine(left_point, right_point, IM_COL32(255, 220, 0, 210), 1.5F);
+        draw_list->AddCircleFilled(left_point, 3.0F, IM_COL32(255, 220, 0, 255));
+        draw_list->AddCircleFilled(right_point, 3.0F, IM_COL32(255, 220, 0, 255));
+    }
     ImGui::End();
     return false;
 }
@@ -253,11 +330,38 @@ int main() {
             std::vector<CalibrationPair> calibration_pair_history;
             std::size_t selected_calibration_pair_index = 0;
             std::optional<std::size_t> uploaded_calibration_pair_index;
+            std::optional<ffs_viewer::calibration::StereoCharucoCalibrationResult> calibration_result;
+            ffs_viewer::calibration::StereoRectifier stereo_rectifier;
+            ffs_viewer::inference::SentechFfsPipeline ffs_pipeline(FFS_SENTECH_FFS_ENGINE_DIR);
+            bool show_rectified_images = false;
+            ffs_viewer::io::BgrFrame rectified_left_frame;
+            ffs_viewer::io::BgrFrame rectified_right_frame;
+            const std::filesystem::path calibration_result_path = "sentech_stereo_calibration.json";
             std::string calibration_capture_status = "No calibration pair captured";
+            std::string image_display_status = "Showing raw camera images";
+            try {
+                ffs_viewer::calibration::CharucoBoardConfig loaded_board_config;
+                ffs_viewer::calibration::StereoCharucoCalibrationResult loaded_result;
+                if (ffs_viewer::calibration::loadStereoCharucoCalibration(
+                        calibration_result_path, loaded_board_config, loaded_result)) {
+                    charuco_detector.setBoardConfig(loaded_board_config);
+                    charuco_config = loaded_board_config;
+                    charuco_dictionary_index = charucoDictionaryIndex(charuco_config.dictionary_name);
+                    calibration_result = std::move(loaded_result);
+                    stereo_rectifier.setCalibration(*calibration_result);
+                    calibration_capture_status = "Loaded calibration from " + calibration_result_path.string();
+                }
+            } catch (const std::exception &error) {
+                calibration_capture_status = "Calibration JSON load error: " + std::string(error.what());
+            }
             ImageTexture left_texture;
             ImageTexture right_texture;
             ImageTexture calibration_left_texture;
             ImageTexture calibration_right_texture;
+            ImageTexture disparity_texture;
+            ffs_viewer::ui::SentechPointCloudViewer point_cloud_viewer;
+            std::uint64_t uploaded_disparity_left_frame_id = 0;
+            std::uint64_t uploaded_disparity_right_frame_id = 0;
 
             while (!glfwWindowShouldClose(window)) {
                 glfwPollEvents();
@@ -287,6 +391,7 @@ int main() {
                                 pair.left_timestamp_ns = best->left.timestamp_ns;
                                 pair.right_timestamp_ns = best->right.timestamp_ns;
                                 pair.timestamp_delta_ns = best->timestamp_delta_ns;
+                                pair.board_config = charuco_detector.boardConfig();
                                 charuco_detector.detect(best->left, pair.left);
                                 charuco_detector.detect(best->right, pair.right);
                                 if (calibration_pair_history.size() == kMaxCalibrationPairHistory)
@@ -302,14 +407,41 @@ int main() {
                             }
                         }
                     }
+                    const ffs_viewer::io::BgrFrame *display_left = &capture.leftFrame();
+                    const ffs_viewer::io::BgrFrame *display_right = &capture.rightFrame();
+                    if (show_rectified_images) {
+                        try {
+                            stereo_rectifier.rectify(*display_left, *display_right, rectified_left_frame,
+                                                     rectified_right_frame);
+                            display_left = &rectified_left_frame;
+                            display_right = &rectified_right_frame;
+                            const auto rectified_camera =
+                                stereo_rectifier.rectifiedCamera(display_left->width, display_left->height);
+                            ffs_pipeline.setCameraModel({
+                                rectified_camera.width,
+                                rectified_camera.height,
+                                static_cast<float>(rectified_camera.fx),
+                                static_cast<float>(rectified_camera.fy),
+                                static_cast<float>(rectified_camera.cx),
+                                static_cast<float>(rectified_camera.cy),
+                                static_cast<float>(rectified_camera.baseline_m),
+                            });
+                            ffs_pipeline.submit(*display_left, *display_right);
+                        } catch (const std::exception &error) {
+                            show_rectified_images = false;
+                            ffs_pipeline.stop();
+                            image_display_status = "Rectification error; showing raw images: " +
+                                                   std::string(error.what());
+                        }
+                    }
                     if (live_charuco_detection) {
-                        charuco_detector.detect(capture.leftFrame(), left_charuco);
-                        charuco_detector.detect(capture.rightFrame(), right_charuco);
+                        charuco_detector.detect(*display_left, left_charuco);
+                        charuco_detector.detect(*display_right, right_charuco);
                         left_texture.upload(left_charuco.annotated_frame);
                         right_texture.upload(right_charuco.annotated_frame);
                     } else {
-                        left_texture.upload(capture.leftFrame());
-                        right_texture.upload(capture.rightFrame());
+                        left_texture.upload(*display_left);
+                        right_texture.upload(*display_right);
                     }
                 } catch (const std::exception &error) {
                     capture.stop();
@@ -336,6 +468,27 @@ int main() {
                 if (ImGui::Button("Quit"))
                     glfwSetWindowShouldClose(window, GLFW_TRUE);
                 ImGui::TextUnformatted(capture.status().c_str());
+                if (ImGui::Button(show_rectified_images ? "Show Raw Images" : "Show Rectified Images")) {
+                    if (show_rectified_images) {
+                        show_rectified_images = false;
+                        ffs_pipeline.stop();
+                        image_display_status = "Showing raw camera images";
+                    } else if (!stereo_rectifier.hasCalibration()) {
+                        image_display_status =
+                            "Rectified images require a saved or completed stereo calibration";
+                    } else {
+                        try {
+                            ffs_pipeline.start();
+                            show_rectified_images = true;
+                            image_display_status =
+                                "Showing stereo-rectified images; starting live FFS disparity";
+                        } catch (const std::exception &error) {
+                            image_display_status = "Cannot start Sentech FFS: " +
+                                                   std::string(error.what());
+                        }
+                    }
+                }
+                ImGui::TextWrapped("%s", image_display_status.c_str());
                 ImGui::End();
 
                 ImGui::Begin("Calibration");
@@ -386,10 +539,58 @@ int main() {
                     }
                 }
                 ImGui::TextWrapped("%s", calibration_capture_status.c_str());
+                if (ImGui::Button("Finish Calibration")) {
+                    live_charuco_detection = false;
+                    const auto active_board_config = charuco_detector.boardConfig();
+                    std::vector<ffs_viewer::calibration::CharucoDetection> left_detections;
+                    std::vector<ffs_viewer::calibration::CharucoDetection> right_detections;
+                    for (const CalibrationPair &pair : calibration_pair_history) {
+                        if (sameBoardConfig(pair.board_config, active_board_config)) {
+                            left_detections.push_back(pair.left);
+                            right_detections.push_back(pair.right);
+                        }
+                    }
+                    try {
+                        auto result = ffs_viewer::calibration::calibrateStereoCharuco(
+                            active_board_config, left_detections, right_detections);
+                        ffs_viewer::calibration::saveStereoCharucoCalibration(
+                            calibration_result_path, active_board_config, result);
+                        calibration_result = std::move(result);
+                        stereo_rectifier.setCalibration(*calibration_result);
+                        calibration_capture_status =
+                            "Calibration complete and saved: left RMS " +
+                            std::to_string(calibration_result->left_rms) + ", right RMS " +
+                            std::to_string(calibration_result->right_rms) + ", stereo RMS " +
+                            std::to_string(calibration_result->stereo_rms);
+                    } catch (const std::exception &error) {
+                        calibration_capture_status = "Calibration failed: " + std::string(error.what());
+                    }
+                }
+                if (calibration_result.has_value()) {
+                    ImGui::Text("Single-camera pairs: %d, stereo pairs: %d",
+                                calibration_result->single_camera_pair_count,
+                                calibration_result->stereo_pair_count);
+                    ImGui::Text("RMS: left %.4f, right %.4f, stereo %.4f",
+                                calibration_result->left_rms, calibration_result->right_rms,
+                                calibration_result->stereo_rms);
+                }
                 ImGui::Separator();
                 ImGui::End();
 
                 drawStereoView(left_texture, right_texture);
+                if (show_rectified_images) {
+                    const auto disparity = ffs_pipeline.latestResult();
+                    if (disparity &&
+                        (disparity->left_frame_id != uploaded_disparity_left_frame_id ||
+                         disparity->right_frame_id != uploaded_disparity_right_frame_id)) {
+                        disparity_texture.upload(disparity->visualization);
+                        point_cloud_viewer.update(disparity->xyz, disparity->rgb);
+                        uploaded_disparity_left_frame_id = disparity->left_frame_id;
+                        uploaded_disparity_right_frame_id = disparity->right_frame_id;
+                    }
+                    drawLiveDisparity(disparity_texture, ffs_pipeline.status());
+                    drawLivePointCloud(point_cloud_viewer, ffs_pipeline.status());
+                }
                 if (show_calibration_pair && !calibration_pair_history.empty()) {
                     if (!uploaded_calibration_pair_index.has_value() ||
                         *uploaded_calibration_pair_index != selected_calibration_pair_index) {

@@ -37,6 +37,8 @@ struct FfsRunner::Impl {
     std::unique_ptr<ffs_depth::FFSSingleEngineInference> engine;
     std::uint8_t* d_left_y8 = nullptr;
     std::uint8_t* d_right_y8 = nullptr;
+    std::uint8_t* d_left_bgr = nullptr;
+    std::uint8_t* d_right_bgr = nullptr;
     float* d_disparity = nullptr;
     cudaEvent_t timing_begin = nullptr;
     cudaEvent_t timing_h2d_done = nullptr;
@@ -53,6 +55,8 @@ struct FfsRunner::Impl {
         if (timing_end != nullptr) cudaEventDestroy(timing_end);
         if (d_left_y8 != nullptr) cudaFree(d_left_y8);
         if (d_right_y8 != nullptr) cudaFree(d_right_y8);
+        if (d_left_bgr != nullptr) cudaFree(d_left_bgr);
+        if (d_right_bgr != nullptr) cudaFree(d_right_bgr);
         if (d_disparity != nullptr) cudaFree(d_disparity);
     }
 };
@@ -69,6 +73,10 @@ FfsRunner::FfsRunner(std::string engine_dir) : impl_(std::make_unique<Impl>()) {
     const std::size_t pixels = static_cast<std::size_t>(impl_->width) * impl_->height;
     allocate(reinterpret_cast<void**>(&impl_->d_left_y8), pixels, "cudaMalloc left Y8 buffer");
     allocate(reinterpret_cast<void**>(&impl_->d_right_y8), pixels, "cudaMalloc right Y8 buffer");
+    allocate(reinterpret_cast<void**>(&impl_->d_left_bgr), 3U * pixels,
+             "cudaMalloc left BGR8 buffer");
+    allocate(reinterpret_cast<void**>(&impl_->d_right_bgr), 3U * pixels,
+             "cudaMalloc right BGR8 buffer");
     allocate(reinterpret_cast<void**>(&impl_->d_disparity),
              pixels * sizeof(float), "cudaMalloc disparity buffer");
     checkCuda(cudaEventCreate(&impl_->timing_begin), "create benchmark start event");
@@ -109,6 +117,60 @@ DisparityFrame FfsRunner::infer(const io::StereoFrame& stereo) {
     DisparityFrame disparity;
     disparity.width = stereo.width;
     disparity.height = stereo.height;
+    disparity.values.resize(pixels);
+    checkCuda(cudaMemcpyAsync(disparity.values.data(), impl_->d_disparity,
+                              pixels * sizeof(float), cudaMemcpyDeviceToHost, stream),
+              "copy disparity frame from GPU");
+    checkCuda(cudaEventRecord(impl_->timing_end, stream), "record benchmark end event");
+    checkCuda(cudaStreamSynchronize(stream), "synchronize FFS inference stream");
+    const auto host_end = std::chrono::steady_clock::now();
+
+    disparity.timing.h2d_ms = elapsedMilliseconds(
+        impl_->timing_begin, impl_->timing_h2d_done, "measure benchmark H2D time");
+    disparity.timing.inference_ms = elapsedMilliseconds(
+        impl_->timing_h2d_done, impl_->timing_inference_done, "measure benchmark inference time");
+    disparity.timing.d2h_ms = elapsedMilliseconds(
+        impl_->timing_inference_done, impl_->timing_end, "measure benchmark D2H time");
+    disparity.timing.gpu_total_ms = elapsedMilliseconds(
+        impl_->timing_begin, impl_->timing_end, "measure benchmark GPU total time");
+    disparity.timing.host_total_ms =
+        std::chrono::duration<float, std::milli>(host_end - host_begin).count();
+    return disparity;
+}
+
+DisparityFrame FfsRunner::inferBgr(int width, int height,
+                                        const std::vector<std::uint8_t>& left_bgr,
+                                        const std::vector<std::uint8_t>& right_bgr) {
+    if (width != impl_->width || height != impl_->height) {
+        throw std::runtime_error(
+            "Stereo frame dimensions do not match this fixed-resolution FFS engine");
+    }
+
+    const std::size_t pixels = static_cast<std::size_t>(width) * height;
+    const std::size_t bgr_bytes = 3U * pixels;
+    if (left_bgr.size() != bgr_bytes || right_bgr.size() != bgr_bytes) {
+        throw std::runtime_error("Stereo frame does not contain a complete BGR8 image pair");
+    }
+
+    const cudaStream_t stream = impl_->engine->stream();
+    const auto host_begin = std::chrono::steady_clock::now();
+    checkCuda(cudaEventRecord(impl_->timing_begin, stream), "record benchmark start event");
+    checkCuda(cudaMemcpyAsync(impl_->d_left_bgr, left_bgr.data(), bgr_bytes,
+                              cudaMemcpyHostToDevice, stream),
+              "copy left BGR8 frame to GPU");
+    checkCuda(cudaMemcpyAsync(impl_->d_right_bgr, right_bgr.data(), bgr_bytes,
+                              cudaMemcpyHostToDevice, stream),
+              "copy right BGR8 frame to GPU");
+    checkCuda(cudaEventRecord(impl_->timing_h2d_done, stream), "record benchmark H2D time");
+
+    impl_->engine->infer(impl_->d_left_bgr, impl_->d_right_bgr, height, width,
+                         impl_->d_disparity);
+    checkCuda(cudaEventRecord(impl_->timing_inference_done, stream),
+              "record benchmark inference event");
+
+    DisparityFrame disparity;
+    disparity.width = width;
+    disparity.height = height;
     disparity.values.resize(pixels);
     checkCuda(cudaMemcpyAsync(disparity.values.data(), impl_->d_disparity,
                               pixels * sizeof(float), cudaMemcpyDeviceToHost, stream),

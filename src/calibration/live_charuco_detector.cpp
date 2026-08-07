@@ -161,6 +161,11 @@ void LiveCharucoDetector::detect(const io::BgrFrame &frame, CharucoDetection &re
         cv::aruco::interpolateCornersCharuco(marker_corners, marker_ids, gray, impl_->board,
                                               charuco_corners, charuco_ids);
         result.corner_count = charuco_ids.rows;
+        result.corners.reserve(static_cast<std::size_t>(result.corner_count));
+        for (int index = 0; index < result.corner_count; ++index) {
+            const cv::Point2f point = charuco_corners.at<cv::Point2f>(index);
+            result.corners.push_back({charuco_ids.at<int>(index), point.x, point.y});
+        }
         if (result.corner_count >= kMinimumCharucoCorners)
             cv::aruco::drawDetectedCornersCharuco(overlay, charuco_corners, charuco_ids,
                                                   cv::Scalar(0, 255, 0));

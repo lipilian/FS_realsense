@@ -31,8 +31,13 @@ public:
     FfsRunner(const FfsRunner&) = delete;
     FfsRunner& operator=(const FfsRunner&) = delete;
 
-    // Runs the fixed-resolution FFS TensorRT engine on a rectified D455 Y8 pair.
+    // Runs the fixed-resolution FFS TensorRT engine on a rectified monochrome pair.
     DisparityFrame infer(const io::StereoFrame& stereo);
+
+    // Runs the fixed-resolution FFS TensorRT engine on BGR8 HWC images. The
+    // runtime's RGB preprocessing kernel performs the BGR-to-RGB channel reorder.
+    DisparityFrame inferBgr(int width, int height, const std::vector<std::uint8_t>& left_bgr,
+                            const std::vector<std::uint8_t>& right_bgr);
 
     int modelWidth() const;
     int modelHeight() const;
