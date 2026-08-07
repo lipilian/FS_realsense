@@ -6,9 +6,6 @@
 #include <imgui.h>
 #include <imgui_impl_glfw.h>
 #include <imgui_impl_opengl3.h>
-#include <opencv2/core.hpp>
-#include <opencv2/imgproc.hpp>
-
 #include <algorithm>
 #include <array>
 #include <cstddef>
@@ -28,11 +25,6 @@ constexpr std::size_t kRightCameraIndex = 1;
 constexpr std::array<const char *, kCameraCount> kCameraLabels{"Left camera", "Right camera"};
 constexpr const char *kLeftCameraName = "STC-MCS500U3V(21LJ530)";
 constexpr const char *kRightCameraName = "STC-MCS500U3V(21LJ548)";
-
-enum class FrameRotation {
-    Clockwise90,
-    CounterClockwise90,
-};
 
 struct BgrFrame {
     int width = 0;
@@ -102,12 +94,7 @@ class StereoCapture {
 
             converters_[index]->Convert(buffer->GetIStImage(), converted_images_[index]);
             StApi::IStImage *image = converted_images_[index]->GetIStImage();
-            // Normalize orientation at the capture boundary so every
-            // downstream consumer receives the correctly oriented image.
-            const FrameRotation rotation = index == kLeftCameraIndex
-                                               ? FrameRotation::Clockwise90
-                                               : FrameRotation::CounterClockwise90;
-            copyBgrImage(*image, frames_[index], rotation);
+            copyBgrImage(*image, frames_[index]);
         }
     }
 
@@ -148,28 +135,20 @@ class StereoCapture {
                                  "\", UserDefinedName=\"" + user_defined_name + "\"");
     }
 
-    static void copyBgrImage(const StApi::IStImage &image, BgrFrame &frame,
-                             FrameRotation rotation) {
-        const int source_width = static_cast<int>(image.GetImageWidth());
-        const int source_height = static_cast<int>(image.GetImageHeight());
-        const int destination_width = source_height;
-        const int destination_height = source_width;
-        const std::size_t destination_row_bytes = static_cast<std::size_t>(destination_width) * 3U;
+    static void copyBgrImage(const StApi::IStImage &image, BgrFrame &frame) {
+        const int width = static_cast<int>(image.GetImageWidth());
+        const int height = static_cast<int>(image.GetImageHeight());
+        const std::size_t row_bytes = static_cast<std::size_t>(width) * 3U;
+        const auto *source = static_cast<const std::uint8_t *>(image.GetImageBuffer());
+        const std::size_t source_pitch = image.GetImageLinePitch();
 
-        frame.width = destination_width;
-        frame.height = destination_height;
-        frame.pixels.resize(destination_row_bytes * static_cast<std::size_t>(destination_height));
-
-        // Wrap the SDK buffer directly, preserving its line pitch. One OpenCV
-        // rotation replaces all per-pixel CPU loops.
-        const cv::Mat source(source_height, source_width, CV_8UC3, image.GetImageBuffer(),
-                             image.GetImageLinePitch());
-        cv::Mat destination(destination_height, destination_width, CV_8UC3, frame.pixels.data(),
-                            destination_row_bytes);
-        const int operation = rotation == FrameRotation::Clockwise90
-                                  ? cv::ROTATE_90_CLOCKWISE
-                                  : cv::ROTATE_90_COUNTERCLOCKWISE;
-        cv::rotate(source, destination, operation);
+        frame.width = width;
+        frame.height = height;
+        frame.pixels.resize(row_bytes * static_cast<std::size_t>(height));
+        for (int row = 0; row < height; ++row) {
+            std::memcpy(frame.pixels.data() + static_cast<std::size_t>(row) * row_bytes,
+                        source + static_cast<std::size_t>(row) * source_pitch, row_bytes);
+        }
     }
 
     void stopNoThrow() noexcept {

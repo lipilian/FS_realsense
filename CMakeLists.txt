@@ -102,7 +102,6 @@ if(FFS_VIEWER_BUILD_SENTECH_DUAL_CONNECT)
   find_package(OpenGL REQUIRED)
   find_package(glfw3 REQUIRED)
   find_package(GLEW REQUIRED)
-  find_package(OpenCV 4 REQUIRED COMPONENTS core imgproc)
 
   add_library(sentech_imgui STATIC
     third_party/imgui/imgui.cpp
@@ -139,7 +138,6 @@ if(FFS_VIEWER_BUILD_SENTECH_DUAL_CONNECT)
     glfw
     GLEW::GLEW
     OpenGL::GL
-    ${OpenCV_LIBS}
     Threads::Threads
   )
   set_target_properties(sentech_stereo PROPERTIES
