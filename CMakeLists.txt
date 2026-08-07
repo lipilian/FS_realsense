@@ -99,6 +99,7 @@ if(FFS_VIEWER_BUILD_SENTECH_DUAL_CONNECT)
       "FFS_VIEWER_BUILD_SENTECH_DUAL_CONNECT.")
   endif()
 
+  find_package(OpenCV 4 REQUIRED COMPONENTS core imgproc aruco calib3d)
   find_package(OpenGL REQUIRED)
   find_package(glfw3 REQUIRED)
   find_package(GLEW REQUIRED)
@@ -119,6 +120,7 @@ if(FFS_VIEWER_BUILD_SENTECH_DUAL_CONNECT)
 
   add_executable(sentech_stereo
     apps/sentech_stereo/main.cpp
+    src/calibration/live_charuco_detector.cpp
     src/io/sentech_stereo_source.cpp
   )
   target_compile_features(sentech_stereo PRIVATE cxx_std_20)
@@ -136,6 +138,7 @@ if(FFS_VIEWER_BUILD_SENTECH_DUAL_CONNECT)
     "${FFS_SENTECH_GENAPI_LIBRARY}"
     "${FFS_SENTECH_IP_LIBRARY}"
     "${FFS_SENTECH_TURBOJPEG_LIBRARY}"
+    ${OpenCV_LIBS}
     sentech_imgui
     glfw
     GLEW::GLEW

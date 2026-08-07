@@ -4,6 +4,7 @@
 
 - UI 源码：`apps/sentech_stereo/main.cpp`
 - Sentech 采集 I/O：`include/ffs_viewer/io/sentech_stereo_source.hpp` 与 `src/io/sentech_stereo_source.cpp`
+- ChArUco 检测：`include/ffs_viewer/calibration/live_charuco_detector.hpp` 与 `src/calibration/live_charuco_detector.cpp`
 - CMake 目标与可执行文件：`sentech_stereo`
 - 原有 `live_viewer` 保留，未删除或替换。
 - Sentech app 不依赖 Intel RealSense 或 `realsense2`。
@@ -18,11 +19,11 @@
 - `Stop`：停止两台相机及主机端的数据流。
 - `Quit`：退出程序。
 
-独立的 `Calibration` 控制窗口已添加 `Live ChArUco Detection` 按钮；目前仅为 UI 占位，尚未连接检测逻辑。
+独立的 `Calibration` 控制窗口提供可编辑的 `Squares X/Y`、`Square length (m)`、`Marker length (m)` 和 ArUco dictionary（`4×4`、`5×5`、`6×6`、`7×7` 常用容量）下拉框；按 `Apply ChArUco Board` 才会验证并应用新参数。默认参数为 `8 × 5` squares、`54 mm` square length、`40 mm` marker length、`DICT_4X4_250`。窗口还提供 `Live ChArUco Detection` / `Stop Live ChArUco Detection` 切换按钮。启用后对左右最新 BGR 帧实时检测，并在画面上叠加 marker、ChArUco 角点与检测计数。本机 C++ OpenCV 为 4.6，因此检测流程使用 `detectMarkers()` 后调用 `interpolateCornersCharuco()`；这是 OpenCV 4 中完成内角点插值的标准 API。
 
 图像通过 Sentech StApi 的像素格式转换器统一转换为 `BGR8`，再上传到 OpenGL 纹理，在 `Stereo View` 面板并排显示。左右角色不依赖设备发现顺序，而是按相机名称固定匹配：`STC-MCS500U3V(21LJ530)` 为左相机，`STC-MCS500U3V(21LJ548)` 为右相机。匹配 Sentech 的用户定义名称或显示名称；未知或重复名称会使 `Start` 失败。两路帧均不做软件旋转，按相机原始方向进入 app，输出尺寸保持为 `2448 × 2048`。除连接与采集外，当前 app 不修改相机设置、不做同步、标定、推理或点云处理。
 
-采集采用 latest-frame 缓冲：每台相机各有一个后台线程持续取流、转换并发布最新帧；UI 线程只读取每路最新完成帧。每路使用三个可复用 BGR 帧槽，UI 或后续检测跟不上时会丢弃旧帧，而不会使显示延迟持续累积。该机制不对两台相机做时间戳配对，也不提供硬件同步保证。
+采集采用 latest-frame 缓冲：每台相机各有一个后台线程持续取流、转换并发布最新帧；UI 线程只读取每路最新完成帧。每路使用三个可复用 BGR 帧槽，ChArUco 检测或 UI 跟不上时会丢弃旧帧，而不会使显示延迟持续累积。该机制不对两台相机做时间戳配对，也不提供硬件同步保证。
 
 ## 已验证的硬件
 
