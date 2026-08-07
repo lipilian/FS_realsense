@@ -10,6 +10,8 @@ namespace ffs_viewer::io {
 struct BgrFrame {
     int width = 0;
     int height = 0;
+    std::uint64_t frame_id = 0;
+    std::uint64_t timestamp_ns = 0;
     std::vector<std::uint8_t> pixels;
 
     bool valid() const {

@@ -19,7 +19,7 @@
 - `Stop`：停止两台相机及主机端的数据流。
 - `Quit`：退出程序。
 
-独立的 `Calibration` 控制窗口提供可编辑的 `Squares X/Y`、`Square length (m)`、`Marker length (m)` 和 ArUco dictionary（`4×4`、`5×5`、`6×6`、`7×7` 常用容量）下拉框；按 `Apply ChArUco Board` 才会验证并应用新参数。默认参数为 `8 × 5` squares、`54 mm` square length、`40 mm` marker length、`DICT_4X4_250`。窗口还提供 `Live ChArUco Detection` / `Stop Live ChArUco Detection` 切换按钮。启用后对左右最新 BGR 帧实时检测，并在画面上叠加 marker、ChArUco 角点与检测计数。本机 C++ OpenCV 为 4.6，因此检测流程使用 `detectMarkers()` 后调用 `interpolateCornersCharuco()`；这是 OpenCV 4 中完成内角点插值的标准 API。
+独立的 `Calibration` 控制窗口提供可编辑的 `Squares X/Y`、`Square length (m)`、`Marker length (m)` 和 ArUco dictionary（`4×4`、`5×5`、`6×6`、`7×7` 常用容量）下拉框；按 `Apply ChArUco Board` 才会验证、应用并写入当前运行目录的 `sentech_stereo_charuco.json`；下次从同一目录启动时会自动读取。默认参数为 `8 × 5` squares、`54 mm` square length、`40 mm` marker length、`DICT_4X4_250`。窗口还提供 `Live ChArUco Detection` / `Stop Live ChArUco Detection` 切换按钮。启用后对左右最新 BGR 帧实时检测，并在画面上叠加 marker 与 ChArUco 角点；检测计数显示在 Calibration 面板。本机 C++ OpenCV 为 4.6，因此检测流程使用 `detectMarkers()` 后调用 `interpolateCornersCharuco()`；这是 OpenCV 4 中完成内角点插值的标准 API。`Capture One Calibration Pair` 会收集之后的 5 个左右新帧组合，使用 Sentech `GetTimestampNS()` 的绝对差挑选最小者，然后在独立的 `Calibration Pair` 窗口显示静态左右图、timestamp 差及各自的检测结果。最近 20 组会保留在历史记录中，可在该窗口用 `Previous` / `Next` 切换，并可用 `Delete This Pair` 删除当前组。
 
 图像通过 Sentech StApi 的像素格式转换器统一转换为 `BGR8`，再上传到 OpenGL 纹理，在 `Stereo View` 面板并排显示。左右角色不依赖设备发现顺序，而是按相机名称固定匹配：`STC-MCS500U3V(21LJ530)` 为左相机，`STC-MCS500U3V(21LJ548)` 为右相机。匹配 Sentech 的用户定义名称或显示名称；未知或重复名称会使 `Start` 失败。两路帧均不做软件旋转，按相机原始方向进入 app，输出尺寸保持为 `2448 × 2048`。除连接与采集外，当前 app 不修改相机设置、不做同步、标定、推理或点云处理。
 

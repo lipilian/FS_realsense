@@ -13,3 +13,6 @@ build/
 # ImGui and other local application settings.
 *.ini
 
+
+# Runtime ChArUco board settings saved by sentech_stereo.
+sentech_stereo_charuco.json

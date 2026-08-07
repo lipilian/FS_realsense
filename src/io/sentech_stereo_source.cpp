@@ -176,6 +176,9 @@ class StereoCapture {
 
                 converters_[index]->Convert(buffer->GetIStImage(), converted_images_[index]);
                 copyBgrImage(*converted_images_[index]->GetIStImage(), **available);
+                const auto *buffer_info = buffer->GetIStStreamBufferInfo();
+                (*available)->frame_id = buffer_info->GetFrameID();
+                (*available)->timestamp_ns = buffer_info->GetTimestampNS();
                 {
                     std::lock_guard<std::mutex> lock(frame_mutex_);
                     latest_frames_[index] = *available;

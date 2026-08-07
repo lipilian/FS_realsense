@@ -2,6 +2,7 @@
 
 #include "ffs_viewer/io/sentech_stereo_source.hpp"
 
+#include <filesystem>
 #include <memory>
 #include <string>
 
@@ -36,6 +37,10 @@ class LiveCharucoDetector final {
     // Validates and applies a new board without changing camera acquisition.
     void setBoardConfig(const CharucoBoardConfig &config);
     CharucoBoardConfig boardConfig() const;
+
+    // Stores and restores board parameters as JSON. loadBoardConfig() returns false if absent.
+    void saveBoardConfig(const std::filesystem::path &path) const;
+    bool loadBoardConfig(const std::filesystem::path &path);
 
     // Detects the configured ChArUco board in one BGR frame.
     void detect(const io::BgrFrame &frame, CharucoDetection &result) const;

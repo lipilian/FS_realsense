@@ -1,10 +1,12 @@
 #include "ffs_viewer/calibration/live_charuco_detector.hpp"
 
 #include <opencv2/aruco.hpp>
+#include <opencv2/core.hpp>
 #include <opencv2/aruco/charuco.hpp>
 #include <opencv2/imgproc.hpp>
 
 #include <array>
+#include <filesystem>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -89,6 +91,47 @@ CharucoBoardConfig LiveCharucoDetector::boardConfig() const {
     return impl_->config;
 }
 
+void LiveCharucoDetector::saveBoardConfig(const std::filesystem::path &path) const {
+    cv::FileStorage storage(path.string(), cv::FileStorage::WRITE | cv::FileStorage::FORMAT_JSON);
+    if (!storage.isOpened())
+        throw std::runtime_error("Unable to write ChArUco board config: " + path.string());
+
+    const CharucoBoardConfig config = boardConfig();
+    storage << "squares_x" << config.squares_x;
+    storage << "squares_y" << config.squares_y;
+    storage << "square_length_m" << config.square_length_m;
+    storage << "marker_length_m" << config.marker_length_m;
+    storage << "dictionary_name" << config.dictionary_name;
+}
+
+bool LiveCharucoDetector::loadBoardConfig(const std::filesystem::path &path) {
+    if (!std::filesystem::exists(path))
+        return false;
+
+    cv::FileStorage storage(path.string(), cv::FileStorage::READ);
+    if (!storage.isOpened())
+        throw std::runtime_error("Unable to read ChArUco board config: " + path.string());
+
+    const cv::FileNode squares_x = storage["squares_x"];
+    const cv::FileNode squares_y = storage["squares_y"];
+    const cv::FileNode square_length_m = storage["square_length_m"];
+    const cv::FileNode marker_length_m = storage["marker_length_m"];
+    const cv::FileNode dictionary_name = storage["dictionary_name"];
+    if (squares_x.empty() || squares_y.empty() || square_length_m.empty() ||
+        marker_length_m.empty() || dictionary_name.empty()) {
+        throw std::runtime_error("ChArUco board config is missing required fields: " + path.string());
+    }
+
+    CharucoBoardConfig config;
+    config.squares_x = static_cast<int>(squares_x);
+    config.squares_y = static_cast<int>(squares_y);
+    config.square_length_m = static_cast<float>(square_length_m.real());
+    config.marker_length_m = static_cast<float>(marker_length_m.real());
+    config.dictionary_name = static_cast<std::string>(dictionary_name);
+    setBoardConfig(config);
+    return true;
+}
+
 void LiveCharucoDetector::detect(const io::BgrFrame &frame, CharucoDetection &result) const {
     result = {};
     if (!frame.valid())
@@ -123,11 +166,6 @@ void LiveCharucoDetector::detect(const io::BgrFrame &frame, CharucoDetection &re
                                                   cv::Scalar(0, 255, 0));
     }
 
-    const std::string status = "Markers: " + std::to_string(result.marker_count) +
-                               "  ChArUco corners: " + std::to_string(result.corner_count);
-    const cv::Scalar color = result.valid() ? cv::Scalar(0, 255, 0) : cv::Scalar(0, 0, 255);
-    cv::putText(overlay, status, cv::Point(20, 45), cv::FONT_HERSHEY_SIMPLEX, 1.0, color, 2,
-                cv::LINE_AA);
 }
 
 } // namespace ffs_viewer::calibration

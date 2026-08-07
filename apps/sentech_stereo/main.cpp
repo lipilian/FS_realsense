@@ -13,9 +13,11 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <iostream>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -85,6 +87,26 @@ class ImageTexture {
     int height_ = 0;
 };
 
+struct CalibrationCandidate {
+    ffs_viewer::io::BgrFrame left;
+    ffs_viewer::io::BgrFrame right;
+    std::uint64_t timestamp_delta_ns = 0;
+};
+
+constexpr std::size_t kMaxCalibrationPairHistory = 20;
+
+struct CalibrationPair {
+    ffs_viewer::calibration::CharucoDetection left;
+    ffs_viewer::calibration::CharucoDetection right;
+    std::uint64_t left_timestamp_ns = 0;
+    std::uint64_t right_timestamp_ns = 0;
+    std::uint64_t timestamp_delta_ns = 0;
+};
+
+std::uint64_t timestampDifference(std::uint64_t left, std::uint64_t right) {
+    return left >= right ? left - right : right - left;
+}
+
 void drawStereoView(const ImageTexture &left, const ImageTexture &right) {
     ImGui::Begin("Stereo View");
     if (!left.valid() || !right.valid()) {
@@ -107,6 +129,73 @@ void drawStereoView(const ImageTexture &left, const ImageTexture &right) {
     ImGui::SameLine(0.F, spacing);
     ImGui::Image(right.id(), right_size);
     ImGui::End();
+}
+
+bool drawCalibrationPair(const ImageTexture &left, const ImageTexture &right,
+                         const std::vector<CalibrationPair> &pairs,
+                         std::size_t &selected_pair_index, bool *open) {
+    ImGui::Begin("Calibration Pair", open);
+    if (pairs.empty()) {
+        ImGui::TextUnformatted("No calibration pair has been captured.");
+        ImGui::End();
+        return false;
+    }
+
+    bool changed_pair = false;
+    if (ImGui::Button("Previous") && selected_pair_index > 0) {
+        --selected_pair_index;
+        changed_pair = true;
+    }
+    ImGui::SameLine();
+    ImGui::Text("Pair %zu / %zu", selected_pair_index + 1, pairs.size());
+    ImGui::SameLine();
+    if (ImGui::Button("Next") && selected_pair_index + 1 < pairs.size()) {
+        ++selected_pair_index;
+        changed_pair = true;
+    }
+    if (changed_pair) {
+        ImGui::End();
+        return false;
+    }
+    ImGui::SameLine();
+    const bool delete_this_pair = ImGui::Button("Delete This Pair");
+    if (delete_this_pair) {
+        ImGui::End();
+        return true;
+    }
+
+    const CalibrationPair &pair = pairs.at(selected_pair_index);
+    ImGui::Text("Left timestamp:  %llu ns", static_cast<unsigned long long>(pair.left_timestamp_ns));
+    ImGui::Text("Right timestamp: %llu ns", static_cast<unsigned long long>(pair.right_timestamp_ns));
+    ImGui::Text("Timestamp difference: %llu ns (%.3f ms)",
+                static_cast<unsigned long long>(pair.timestamp_delta_ns),
+                static_cast<double>(pair.timestamp_delta_ns) / 1'000'000.0);
+    ImGui::Text("Left:  %d markers, %d ChArUco corners", pair.left.marker_count,
+                pair.left.corner_count);
+    ImGui::Text("Right: %d markers, %d ChArUco corners", pair.right.marker_count,
+                pair.right.corner_count);
+    ImGui::Separator();
+
+    if (!left.valid() || !right.valid()) {
+        ImGui::TextUnformatted("Selected pair is not available.");
+        ImGui::End();
+        return false;
+    }
+
+    const ImVec2 available = ImGui::GetContentRegionAvail();
+    const float spacing = ImGui::GetStyle().ItemSpacing.x;
+    const float total_width = static_cast<float>(left.width() + right.width());
+    const float maximum_height = static_cast<float>(std::max(left.height(), right.height()));
+    const float scale = std::min((available.x - spacing) / total_width, available.y / maximum_height);
+    const ImVec2 left_size(static_cast<float>(left.width()) * scale,
+                           static_cast<float>(left.height()) * scale);
+    const ImVec2 right_size(static_cast<float>(right.width()) * scale,
+                            static_cast<float>(right.height()) * scale);
+    ImGui::Image(left.id(), left_size);
+    ImGui::SameLine(0.F, spacing);
+    ImGui::Image(right.id(), right_size);
+    ImGui::End();
+    return false;
 }
 
 } // namespace
@@ -142,20 +231,77 @@ int main() {
         {
             ffs_viewer::io::SentechStereoSource capture;
             ffs_viewer::calibration::LiveCharucoDetector charuco_detector;
+            const std::filesystem::path charuco_config_path = "sentech_stereo_charuco.json";
+            std::string charuco_config_status = "Using default board parameters";
+            try {
+                if (charuco_detector.loadBoardConfig(charuco_config_path))
+                    charuco_config_status = "Loaded " + charuco_config_path.string();
+            } catch (const std::exception &error) {
+                charuco_config_status = "Config load error: " + std::string(error.what());
+            }
             ffs_viewer::calibration::CharucoDetection left_charuco;
             ffs_viewer::calibration::CharucoDetection right_charuco;
             ffs_viewer::calibration::CharucoBoardConfig charuco_config =
                 charuco_detector.boardConfig();
             int charuco_dictionary_index = charucoDictionaryIndex(charuco_config.dictionary_name);
-            std::string charuco_config_status = "Board parameters applied";
             bool live_charuco_detection = false;
+            bool collecting_calibration_pair = false;
+            bool show_calibration_pair = false;
+            std::uint64_t last_calibration_left_frame_id = 0;
+            std::uint64_t last_calibration_right_frame_id = 0;
+            std::vector<CalibrationCandidate> calibration_candidates;
+            std::vector<CalibrationPair> calibration_pair_history;
+            std::size_t selected_calibration_pair_index = 0;
+            std::optional<std::size_t> uploaded_calibration_pair_index;
+            std::string calibration_capture_status = "No calibration pair captured";
             ImageTexture left_texture;
             ImageTexture right_texture;
+            ImageTexture calibration_left_texture;
+            ImageTexture calibration_right_texture;
 
             while (!glfwWindowShouldClose(window)) {
                 glfwPollEvents();
                 try {
                     capture.poll();
+                    if (collecting_calibration_pair && capture.running()) {
+                        const auto &left_frame = capture.leftFrame();
+                        const auto &right_frame = capture.rightFrame();
+                        if (left_frame.valid() && right_frame.valid() &&
+                            left_frame.frame_id != last_calibration_left_frame_id &&
+                            right_frame.frame_id != last_calibration_right_frame_id) {
+                            last_calibration_left_frame_id = left_frame.frame_id;
+                            last_calibration_right_frame_id = right_frame.frame_id;
+                            calibration_candidates.push_back(
+                                {left_frame, right_frame,
+                                 timestampDifference(left_frame.timestamp_ns, right_frame.timestamp_ns)});
+                            calibration_capture_status = "Collecting candidate " +
+                                                         std::to_string(calibration_candidates.size()) + " / 5";
+
+                            if (calibration_candidates.size() == 5) {
+                                const auto best = std::min_element(
+                                    calibration_candidates.begin(), calibration_candidates.end(),
+                                    [](const CalibrationCandidate &a, const CalibrationCandidate &b) {
+                                        return a.timestamp_delta_ns < b.timestamp_delta_ns;
+                                    });
+                                CalibrationPair pair;
+                                pair.left_timestamp_ns = best->left.timestamp_ns;
+                                pair.right_timestamp_ns = best->right.timestamp_ns;
+                                pair.timestamp_delta_ns = best->timestamp_delta_ns;
+                                charuco_detector.detect(best->left, pair.left);
+                                charuco_detector.detect(best->right, pair.right);
+                                if (calibration_pair_history.size() == kMaxCalibrationPairHistory)
+                                    calibration_pair_history.erase(calibration_pair_history.begin());
+                                calibration_pair_history.push_back(std::move(pair));
+                                selected_calibration_pair_index = calibration_pair_history.size() - 1;
+                                uploaded_calibration_pair_index.reset();
+                                calibration_candidates.clear();
+                                collecting_calibration_pair = false;
+                                show_calibration_pair = true;
+                                calibration_capture_status =
+                                    "Selected the smallest timestamp difference from 5 pairs; saved in history";
+                            }
+                        }
+                    }
                     if (live_charuco_detection) {
                         charuco_detector.detect(capture.leftFrame(), left_charuco);
                         charuco_detector.detect(capture.rightFrame(), right_charuco);
@@ -207,7 +353,8 @@ int main() {
                         kCharucoDictionaryNames.at(static_cast<std::size_t>(charuco_dictionary_index));
                     try {
                         charuco_detector.setBoardConfig(charuco_config);
-                        charuco_config_status = "Board parameters applied";
+                        charuco_detector.saveBoardConfig(charuco_config_path);
+                        charuco_config_status = "Applied and saved to " + charuco_config_path.string();
                     } catch (const std::exception &error) {
                         charuco_config_status = "Board parameter error: " + std::string(error.what());
                     }
@@ -226,9 +373,48 @@ int main() {
                     ImGui::Text("Right: %d markers, %d ChArUco corners", right_charuco.marker_count,
                                 right_charuco.corner_count);
                 }
+                ImGui::Separator();
+                if (ImGui::Button("Capture One Calibration Pair")) {
+                    if (!capture.running()) {
+                        calibration_capture_status = "Start both cameras before capturing a calibration pair";
+                    } else {
+                        collecting_calibration_pair = true;
+                        calibration_candidates.clear();
+                        last_calibration_left_frame_id = 0;
+                        last_calibration_right_frame_id = 0;
+                        calibration_capture_status = "Collecting 5 timestamp candidates";
+                    }
+                }
+                ImGui::TextWrapped("%s", calibration_capture_status.c_str());
+                ImGui::Separator();
                 ImGui::End();
 
                 drawStereoView(left_texture, right_texture);
+                if (show_calibration_pair && !calibration_pair_history.empty()) {
+                    if (!uploaded_calibration_pair_index.has_value() ||
+                        *uploaded_calibration_pair_index != selected_calibration_pair_index) {
+                        const CalibrationPair &pair =
+                            calibration_pair_history.at(selected_calibration_pair_index);
+                        calibration_left_texture.upload(pair.left.annotated_frame);
+                        calibration_right_texture.upload(pair.right.annotated_frame);
+                        uploaded_calibration_pair_index = selected_calibration_pair_index;
+                    }
+                    const bool delete_selected_pair =
+                        drawCalibrationPair(calibration_left_texture, calibration_right_texture,
+                                            calibration_pair_history, selected_calibration_pair_index,
+                                            &show_calibration_pair);
+                    if (delete_selected_pair) {
+                        calibration_pair_history.erase(
+                            calibration_pair_history.begin() +
+                            static_cast<std::ptrdiff_t>(selected_calibration_pair_index));
+                        uploaded_calibration_pair_index.reset();
+                        if (calibration_pair_history.empty()) {
+                            show_calibration_pair = false;
+                        } else if (selected_calibration_pair_index >= calibration_pair_history.size()) {
+                            selected_calibration_pair_index = calibration_pair_history.size() - 1;
+                        }
+                    }
+                }
 
                 ImGui::Render();
                 int framebuffer_width = 0;
