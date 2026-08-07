@@ -10,5 +10,6 @@ data/
 
 build/
 
-imgui.ini
+# ImGui and other local application settings.
+*.ini
 
