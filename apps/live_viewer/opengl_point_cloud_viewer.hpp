@@ -28,9 +28,9 @@ class OpenGLPointCloudViewer {
     void setMaxDepth(float max_depth_m);
     void draw(ImDrawList *draw_list, const ImVec2 &screen_pos, const ImVec2 &size, float scale_x,
               float scale_y, float framebuffer_height);
-    float meshAreaM2() const noexcept { return mesh_area_m2_; }
     void interact(bool hovered, bool orbiting, bool panning, float delta_x, float delta_y, float wheel);
     int pointCount() const { return point_count_; }
+    float meshAreaM2() const noexcept { return mesh_area_m2_; }
 
   private:
     struct Camera {
@@ -66,8 +66,8 @@ class OpenGLPointCloudViewer {
     bool use_cuda_vbo_ = false;
     bool show_mesh_ = false;
     int mesh_index_count_ = 0;
-    int point_count_ = 0;
     float mesh_area_m2_ = 0.F;
+    int point_count_ = 0;
     float max_depth_m_ = 10.F;
     static constexpr float kCloudDepthOffsetM = 2.F;
     Camera camera_;

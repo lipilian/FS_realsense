@@ -185,10 +185,7 @@ void LivePipeline::run(std::stop_token stop_token) {
                 result->final_gpu_left_plane_stride = final_cloud.left_plane_stride;
                 result->final_gpu_point_count = final_cloud.point_count;
                 result->final_gpu_mesh_parent = final_cloud.d_mesh_parent;
-                result->final_gpu_mesh_cell_area = final_cloud.d_mesh_cell_area;
-                result->final_gpu_mesh_area = final_cloud.d_mesh_area;
-                result->final_gpu_mesh_best_root = final_cloud.d_mesh_best_root;
-                result->final_gpu_mesh_best_area_bits = final_cloud.d_mesh_best_area_bits;
+                result->final_gpu_mesh_total_area = final_cloud.d_mesh_total_area;
                 {
                     std::scoped_lock lock(frame_mutex_);
                     latest_frame_ = std::move(result);

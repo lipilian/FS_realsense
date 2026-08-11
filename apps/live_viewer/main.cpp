@@ -192,10 +192,7 @@ int main(int argc, char **argv) {
                 gpu_cloud.left_plane_stride = displayed_frame->final_gpu_left_plane_stride;
                 gpu_cloud.point_count = displayed_frame->final_gpu_point_count;
                 gpu_cloud.d_mesh_parent = displayed_frame->final_gpu_mesh_parent;
-                gpu_cloud.d_mesh_area = displayed_frame->final_gpu_mesh_area;
-                gpu_cloud.d_mesh_cell_area = displayed_frame->final_gpu_mesh_cell_area;
-                gpu_cloud.d_mesh_best_root = displayed_frame->final_gpu_mesh_best_root;
-                gpu_cloud.d_mesh_best_area_bits = displayed_frame->final_gpu_mesh_best_area_bits;
+                gpu_cloud.d_mesh_total_area = displayed_frame->final_gpu_mesh_total_area;
                 gpu_cloud.disparity.width = displayed_frame->final_disparity_width;
                 gpu_cloud.disparity.height = displayed_frame->final_disparity_height;
                 gpu_cloud.display_step = mask_step;
@@ -250,10 +247,7 @@ int main(int argc, char **argv) {
                     gpu_cloud.left_plane_stride = latest->final_gpu_left_plane_stride;
                      gpu_cloud.point_count = latest->final_gpu_point_count;
                     gpu_cloud.d_mesh_parent = latest->final_gpu_mesh_parent;
-                    gpu_cloud.d_mesh_area = latest->final_gpu_mesh_area;
-                    gpu_cloud.d_mesh_cell_area = latest->final_gpu_mesh_cell_area;
-                    gpu_cloud.d_mesh_best_root = latest->final_gpu_mesh_best_root;
-                    gpu_cloud.d_mesh_best_area_bits = latest->final_gpu_mesh_best_area_bits;
+                    gpu_cloud.d_mesh_total_area = latest->final_gpu_mesh_total_area;
                      gpu_cloud.disparity.width = latest->final_disparity_width;
                     gpu_cloud.disparity.height = latest->final_disparity_height;
                     viewer.updateCudaFinal(gpu_cloud);
@@ -317,9 +311,8 @@ int main(int argc, char **argv) {
                 ImGui::End();
             }
             ImGui::Begin("Point Cloud");
+            ImGui::Text("Current triangle area: %.1f cm^2", viewer.meshAreaM2() * 10000.F);
             ImGui::Text("%d valid points", viewer.pointCount());
-            if (viewer.meshAreaM2() > 0.F)
-                ImGui::Text("Largest selected surface: %.1f cm²", viewer.meshAreaM2() * 10000.F);
             const ImVec2 panel_pos = ImGui::GetCursorScreenPos();
             const ImVec2 panel_size = ImGui::GetContentRegionAvail();
             ImGui::InvisibleButton("cloud_canvas", panel_size,

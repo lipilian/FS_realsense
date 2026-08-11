@@ -18,6 +18,7 @@
 #include <atomic>
 #include <array>
 #include <chrono>
+#include <cctype>
 #include <cerrno>
 #include <cstddef>
 #include <cstdint>
@@ -27,6 +28,8 @@
 #include <filesystem>
 #include <functional>
 #include <iomanip>
+#include <fstream>
+#include <iterator>
 #include <iostream>
 #include <memory>
 #include <mutex>
@@ -129,6 +132,21 @@ class AnyLabelingBridge final {
         status_ = "AnyLabeling is open. Save the annotation, then close AnyLabeling to import the mask.";
     }
 
+    void discardSavedAnnotation() {
+        std::error_code error;
+        std::filesystem::remove(annotation_path_, error);
+        if (error) {
+            throw std::runtime_error("Unable to remove stale AnyLabeling annotation: " +
+                                     error.message());
+        }
+    }
+
+    std::optional<AnyLabelingMask> loadSavedMask() const {
+        if (!std::filesystem::is_regular_file(annotation_path_))
+            return std::nullopt;
+        return loadMask();
+    }
+
     std::optional<AnyLabelingMask> pollImport() {
         if (!running())
             return std::nullopt;
@@ -143,20 +161,66 @@ class AnyLabelingBridge final {
                                      std::string(std::strerror(errno)));
         }
         process_id_ = -1;
-        if (!WIFEXITED(child_status) || WEXITSTATUS(child_status) != 0) {
-            status_ = "AnyLabeling closed without a successful exit; mask was not changed.";
+        const bool successful_exit = WIFEXITED(child_status) && WEXITSTATUS(child_status) == 0;
+        // A window-manager close can report a non-zero status even after AnyLabeling
+        // has autosaved the annotation. A valid JSON from this launch is authoritative.
+        if (!successful_exit && !std::filesystem::is_regular_file(annotation_path_)) {
+            status_ = "AnyLabeling closed without a saved annotation.";
             throw std::runtime_error(status_);
         }
 
         AnyLabelingMask imported_mask = loadMask();
         status_ = "Imported " + std::to_string(imported_mask.polygon_count) +
                   " AnyLabeling polygon(s) from " + annotation_path_.string();
+        if (!successful_exit)
+            status_ += " after the AnyLabeling window was closed.";
         return imported_mask;
     }
 
   private:
     AnyLabelingMask loadMask() const {
-        cv::FileStorage storage(annotation_path_.string(), cv::FileStorage::READ);
+        std::ifstream input(annotation_path_);
+        if (!input)
+            throw std::runtime_error("AnyLabeling did not save an annotation JSON");
+        const std::string source((std::istreambuf_iterator<char>(input)),
+                                 std::istreambuf_iterator<char>());
+        std::string normalized;
+        normalized.reserve(source.size());
+        bool in_string = false;
+        bool escaped = false;
+        for (std::size_t index = 0; index < source.size(); ++index) {
+            const char character = source[index];
+            if (in_string) {
+                normalized.push_back(character);
+                if (escaped) {
+                    escaped = false;
+                } else if (character == static_cast<char>(92)) {
+                    escaped = true;
+                } else if (character == static_cast<char>(34)) {
+                    in_string = false;
+                }
+                continue;
+            }
+            if (character == static_cast<char>(34)) {
+                in_string = true;
+                normalized.push_back(character);
+                continue;
+            }
+            const bool has_null = source.compare(index, 4, "null") == 0;
+            const bool token_start = index == 0 ||
+                !std::isalnum(static_cast<unsigned char>(source[index - 1]));
+            const bool token_end = index + 4 == source.size() ||
+                !std::isalnum(static_cast<unsigned char>(source[index + 4]));
+            if (has_null && token_start && token_end) {
+                normalized.push_back(static_cast<char>(48));
+                index += 3;
+            } else {
+                normalized.push_back(character);
+            }
+        }
+
+        cv::FileStorage storage(normalized, cv::FileStorage::READ | cv::FileStorage::MEMORY |
+                                              cv::FileStorage::FORMAT_JSON);
         if (!storage.isOpened())
             throw std::runtime_error("AnyLabeling did not save an annotation JSON");
 
@@ -478,9 +542,8 @@ void drawLivePointCloud(ffs_viewer::ui::SentechPointCloudViewer &viewer,
 
 void drawFinalPointCloud(ffs_viewer::ui::OpenGLPointCloudViewer &viewer) {
     ImGui::Begin("Live Point Cloud");
+    ImGui::Text("Current triangle area: %.1f cm^2", viewer.meshAreaM2() * 10000.F);
     ImGui::Text("FoundationStereo final: %d GPU vertices", viewer.pointCount());
-    if (viewer.meshAreaM2() > 0.0F)
-        ImGui::Text("Largest selected surface: %.1f cm2", viewer.meshAreaM2() * 10000.0F);
     const ImVec2 available = ImGui::GetContentRegionAvail();
     const ImVec2 canvas_size(std::max(1.0F, available.x), std::max(1.0F, available.y));
     const ImVec2 canvas_origin = ImGui::GetCursorScreenPos();
@@ -732,6 +795,7 @@ int main() {
             bool show_final_capture_view = false;
             cv::Mat final_mask_source;
             cv::Mat final_mask;
+            std::optional<cv::Mat> pending_anylabeling_mask;
             int final_mask_brush_radius = 4;
             bool final_mask_stroke_active = false;
             float final_mesh_depth_threshold_cm = 1.0F;
@@ -757,6 +821,12 @@ int main() {
                     throw std::invalid_argument("Final capture requires a valid stereo pair");
                 }
 
+                if (anylabeling_bridge.running()) {
+                    throw std::logic_error(
+                        "Close AnyLabeling before taking another final capture");
+                }
+                anylabeling_bridge.discardSavedAnnotation();
+                pending_anylabeling_mask.reset();
                 captured_raw_left_frame = raw_left;
                 captured_raw_right_frame = raw_right;
                 captured_foundation_stereo_left_frame =
@@ -814,7 +884,7 @@ int main() {
             while (!glfwWindowShouldClose(window)) {
                 glfwPollEvents();
                 try {
-                    if (const auto imported_mask = anylabeling_bridge.pollImport()) {
+                    if (auto imported_mask = anylabeling_bridge.pollImport()) {
                         if (!displayed_final_capture) {
                             throw std::logic_error(
                                 "AnyLabeling mask returned without an active final capture");
@@ -825,17 +895,11 @@ int main() {
                             throw std::runtime_error(
                                 "AnyLabeling mask dimensions differ from the final-capture image");
                         }
-                        final_mask_source =
-                            cv::Mat(frozen_left.height, frozen_left.width, CV_8UC3,
-                                    const_cast<std::uint8_t *>(frozen_left.pixels.data()))
-                                .clone();
-                        final_mask = imported_mask->mask;
-                        final_mask_stroke_active = false;
-                        show_final_mask_editor = true;
-                        refreshFinalMask();
+                        pending_anylabeling_mask = std::move(imported_mask->mask);
+                        show_final_mask_editor = false;
                         image_display_status = "Imported AnyLabeling mask with " +
                                                std::to_string(imported_mask->polygon_count) +
-                                               " polygon(s)";
+                                               " polygon(s); press Draw Manually to refine it";
                     }
                 } catch (const std::exception &error) {
                     image_display_status =
@@ -1122,7 +1186,23 @@ int main() {
                     final_mask_source = cv::Mat(frozen_left.height, frozen_left.width, CV_8UC3,
                                                  const_cast<std::uint8_t *>(frozen_left.pixels.data()))
                                             .clone();
-                    final_mask = cv::Mat::zeros(final_mask_source.size(), CV_8UC1);
+                    if (auto saved_mask = anylabeling_bridge.loadSavedMask()) {
+                        if (saved_mask->mask.size() != final_mask_source.size()) {
+                            throw std::runtime_error(
+                                "Saved AnyLabeling mask dimensions differ from the final-capture image");
+                        }
+                        final_mask = std::move(saved_mask->mask);
+                        pending_anylabeling_mask.reset();
+                        image_display_status =
+                            "Loaded the AnyLabeling mask for manual refinement";
+                    } else if (pending_anylabeling_mask.has_value()) {
+                        final_mask = std::move(*pending_anylabeling_mask);
+                        pending_anylabeling_mask.reset();
+                        image_display_status =
+                            "Opened the imported AnyLabeling mask for manual refinement";
+                    } else {
+                        final_mask = cv::Mat::zeros(final_mask_source.size(), CV_8UC1);
+                    }
                     final_mask_stroke_active = false;
                     show_final_mask_editor = true;
                     refreshFinalMask();

@@ -86,7 +86,7 @@ void OpenGLPointCloudViewer::updateCudaFinal(const ffs_viewer::geometry::FinalCl
         throw std::runtime_error("CUDA failed to finalize final-cloud OpenGL VBO");
     show_mesh_ = show_mesh && display_cloud.d_mask != nullptr;
     mesh_index_count_ = show_mesh_ ? ffs_viewer::geometry::finalCloudMeshIndexCount(display_cloud) : 0;
-    mesh_area_m2_ = show_mesh_ ? ffs_viewer::geometry::finalCloudLargestMeshAreaM2(display_cloud, 0) : 0.F;
+    mesh_area_m2_ = show_mesh_ ? ffs_viewer::geometry::prepareFinalCloudMesh(display_cloud, 0) : 0.F;
     show_mesh_ = show_mesh_ && mesh_area_m2_ > 0.F;
     if (show_mesh_ && mesh_index_count_ > 0) {
         if (cuda_index_resource_ != nullptr) { cudaGraphicsUnregisterResource(static_cast<cudaGraphicsResource*>(cuda_index_resource_)); cuda_index_resource_ = nullptr; }
