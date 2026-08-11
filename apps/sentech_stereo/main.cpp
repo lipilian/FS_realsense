@@ -756,17 +756,46 @@ int main() {
                     ImGui::Text("Single-camera pairs: %d, stereo pairs: %d",
                                 calibration_result->single_camera_pair_count,
                                 calibration_result->stereo_pair_count);
-                    ImGui::Text("RMS: left %.4f, right %.4f, stereo %.4f",
-                                calibration_result->left_rms, calibration_result->right_rms,
-                                calibration_result->stereo_rms);
+                    constexpr double kMaxCalibrationRmsPx = 1.0;
+                    const bool calibration_passed =
+                        calibration_result->stereo_rms <= kMaxCalibrationRmsPx;
+                    const ImVec4 calibration_color = calibration_passed
+                                                        ? ImVec4(0.20F, 0.90F, 0.30F, 1.0F)
+                                                        : ImVec4(1.0F, 0.25F, 0.25F, 1.0F);
+                    ImGui::Text("RMS: left %.4f, right %.4f", calibration_result->left_rms,
+                                calibration_result->right_rms);
+                    ImGui::TextColored(calibration_color, "Stereo RMS: %.4f px",
+                                       calibration_result->stereo_rms);
+                    if (calibration_passed) {
+                        ImGui::TextColored(calibration_color,
+                                           "Calibration passed (threshold: 1.0 px).");
+                    } else {
+                        ImGui::TextColored(calibration_color,
+                                           "Calibration error exceeds 1.0 px. Please recalibrate.");
+                    }
                 }
                 if (calibration_check_result.has_value()) {
                     ImGui::Text("Check: %d matched ChArUco corners",
                                 calibration_check_result->matched_corner_count);
-                    ImGui::Text("Reprojection RMS (px): left %.4f, right %.4f, stereo %.4f",
+                    constexpr double kMaxCalibrationCheckRmsPx = 1.0;
+                    const bool calibration_check_passed =
+                        calibration_check_result->stereo_reprojection_rms <=
+                        kMaxCalibrationCheckRmsPx;
+                    const ImVec4 check_color = calibration_check_passed
+                                                   ? ImVec4(0.20F, 0.90F, 0.30F, 1.0F)
+                                                   : ImVec4(1.0F, 0.25F, 0.25F, 1.0F);
+                    ImGui::Text("Reprojection RMS (px): left %.4f, right %.4f",
                                 calibration_check_result->left_reprojection_rms,
-                                calibration_check_result->right_reprojection_rms,
-                                calibration_check_result->stereo_reprojection_rms);
+                                calibration_check_result->right_reprojection_rms);
+                    ImGui::TextColored(check_color, "Stereo reprojection RMS: %.4f px",
+                                       calibration_check_result->stereo_reprojection_rms);
+                    if (calibration_check_passed) {
+                        ImGui::TextColored(check_color,
+                                           "Calibration check passed (threshold: 1.0 px).");
+                    } else {
+                        ImGui::TextColored(check_color,
+                                           "Calibration error exceeds 1.0 px. Please recalibrate.");
+                    }
                 }
                 ImGui::Separator();
                 ImGui::End();
