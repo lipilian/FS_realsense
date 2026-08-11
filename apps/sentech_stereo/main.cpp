@@ -67,8 +67,10 @@ struct AnyLabelingMask {
 
 class AnyLabelingBridge final {
   public:
-    AnyLabelingBridge(std::filesystem::path executable, std::filesystem::path work_directory)
+    AnyLabelingBridge(std::filesystem::path executable, std::filesystem::path work_directory,
+                      std::string auto_labeling_model)
         : executable_(std::move(executable)), work_directory_(std::move(work_directory)),
+          auto_labeling_model_(std::move(auto_labeling_model)),
           image_path_(work_directory_ / "final_left.png"),
           annotation_path_(work_directory_ / "final_left.json") {}
 
@@ -106,6 +108,10 @@ class AnyLabelingBridge final {
 
         std::vector<std::string> arguments{executable_.string(), image_path_.string(), "--output",
                                            annotation_path_.string(), "--autosave", "--nodata"};
+        if (!auto_labeling_model_.empty()) {
+            arguments.push_back("--auto-labeling-model");
+            arguments.push_back(auto_labeling_model_);
+        }
         std::vector<char *> argv;
         argv.reserve(arguments.size() + 1);
         for (std::string &argument : arguments)
@@ -202,6 +208,7 @@ class AnyLabelingBridge final {
 
     std::filesystem::path executable_;
     std::filesystem::path work_directory_;
+    std::string auto_labeling_model_;
     std::filesystem::path image_path_;
     std::filesystem::path annotation_path_;
     pid_t process_id_ = -1;
@@ -304,10 +311,42 @@ std::uint64_t timestampDifference(std::uint64_t left, std::uint64_t right) {
     return left >= right ? left - right : right - left;
 }
 
+ffs_viewer::io::BgrFrame makeFoundationStereoInputLeft(
+    const ffs_viewer::io::BgrFrame &rectified_left) {
+    constexpr int kCropPixelsPerSide = 8;
+    constexpr int kFsInputWidth = 608;
+    constexpr int kFsInputHeight = 512;
+    const std::size_t expected_size =
+        static_cast<std::size_t>(rectified_left.width) * rectified_left.height * 3U;
+    if (!rectified_left.valid() || rectified_left.pixels.size() != expected_size ||
+        rectified_left.width <= 2 * kCropPixelsPerSide) {
+        throw std::invalid_argument(
+            "Saving AnnotateMe requires a valid rectified left stereo frame");
+    }
+
+    const cv::Mat rectified_image(rectified_left.height, rectified_left.width, CV_8UC3,
+                                  const_cast<std::uint8_t *>(rectified_left.pixels.data()));
+    cv::Mat resized;
+    cv::resize(rectified_image(cv::Rect(kCropPixelsPerSide, 0,
+                                        rectified_left.width - 2 * kCropPixelsPerSide,
+                                        rectified_left.height)),
+               resized, cv::Size(kFsInputWidth, kFsInputHeight), 0.0, 0.0, cv::INTER_AREA);
+
+    ffs_viewer::io::BgrFrame result;
+    result.width = resized.cols;
+    result.height = resized.rows;
+    result.frame_id = rectified_left.frame_id;
+    result.timestamp_ns = rectified_left.timestamp_ns;
+    result.pixels.assign(resized.datastart, resized.dataend);
+    return result;
+}
+
 std::filesystem::path saveRawStereoPair(const ffs_viewer::io::BgrFrame &left,
-                                         const ffs_viewer::io::BgrFrame &right) {
-    if (!left.valid() || !right.valid())
-        throw std::invalid_argument("Saving a raw stereo pair requires two valid frames");
+                                         const ffs_viewer::io::BgrFrame &right,
+                                         const ffs_viewer::io::BgrFrame &foundation_stereo_left) {
+    if (!left.valid() || !right.valid() || !foundation_stereo_left.valid())
+        throw std::invalid_argument(
+            "Saving a raw stereo pair requires raw left/right and FoundationStereo input frames");
 
     const std::time_t now = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
     std::tm local_time{};
@@ -327,8 +366,12 @@ std::filesystem::path saveRawStereoPair(const ffs_viewer::io::BgrFrame &left,
                              const_cast<std::uint8_t *>(left.pixels.data()));
     const cv::Mat right_image(right.height, right.width, CV_8UC3,
                               const_cast<std::uint8_t *>(right.pixels.data()));
+    const cv::Mat annotate_me_image(foundation_stereo_left.height, foundation_stereo_left.width,
+                                    CV_8UC3,
+                                    const_cast<std::uint8_t *>(foundation_stereo_left.pixels.data()));
     if (!cv::imwrite((output_directory / "left.png").string(), left_image) ||
-        !cv::imwrite((output_directory / "right.png").string(), right_image)) {
+        !cv::imwrite((output_directory / "right.png").string(), right_image) ||
+        !cv::imwrite((output_directory / "AnnotateMe.png").string(), annotate_me_image)) {
         throw std::runtime_error("Unable to save the raw stereo pair to " + output_directory.string());
     }
     return output_directory;
@@ -646,6 +689,7 @@ int main() {
             ffs_viewer::io::BgrFrame rectified_right_frame;
             ffs_viewer::io::BgrFrame captured_raw_left_frame;
             ffs_viewer::io::BgrFrame captured_raw_right_frame;
+            ffs_viewer::io::BgrFrame captured_foundation_stereo_left_frame;
             bool raw_pair_ready_to_save = false;
             bool show_load_pair_dialog = false;
             std::vector<std::filesystem::path> saved_raw_pair_directories;
@@ -695,7 +739,8 @@ int main() {
             std::uint64_t uploaded_disparity_left_frame_id = 0;
             std::uint64_t uploaded_disparity_right_frame_id = 0;
             AnyLabelingBridge anylabeling_bridge(FFS_ANYLABELING_EXECUTABLE,
-                                                  FFS_ANYLABELING_WORK_DIRECTORY);
+                                                  FFS_ANYLABELING_WORK_DIRECTORY,
+                                                  FFS_ANYLABELING_AUTO_LABELING_MODEL);
 
             auto startFinalCapture = [&](const ffs_viewer::io::BgrFrame &raw_left,
                                          const ffs_viewer::io::BgrFrame &raw_right,
@@ -714,6 +759,8 @@ int main() {
 
                 captured_raw_left_frame = raw_left;
                 captured_raw_right_frame = raw_right;
+                captured_foundation_stereo_left_frame =
+                    makeFoundationStereoInputLeft(rectified_left);
                 raw_pair_ready_to_save = true;
                 rectified_left_frame = rectified_left;
                 rectified_right_frame = rectified_right;
@@ -1000,13 +1047,16 @@ int main() {
                 }
                 ImGui::EndDisabled();
                 ImGui::SameLine();
-                ImGui::BeginDisabled(!raw_pair_ready_to_save);
+                ImGui::BeginDisabled(!raw_pair_ready_to_save ||
+                                     !captured_foundation_stereo_left_frame.valid());
                 if (ImGui::Button("Save Raw Pair")) {
                     try {
                         const std::filesystem::path output_directory =
-                            saveRawStereoPair(captured_raw_left_frame, captured_raw_right_frame);
+                            saveRawStereoPair(captured_raw_left_frame, captured_raw_right_frame,
+                                              captured_foundation_stereo_left_frame);
                         image_display_status =
-                            "Saved raw stereo pair to " + output_directory.string();
+                            "Saved raw stereo pair and AnnotateMe.png to " +
+                            output_directory.string();
                     } catch (const std::exception &error) {
                         image_display_status =
                             "Raw stereo pair save failed: " + std::string(error.what());
