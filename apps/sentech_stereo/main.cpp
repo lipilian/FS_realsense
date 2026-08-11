@@ -25,6 +25,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <functional>
 #include <iomanip>
 #include <iostream>
 #include <memory>
@@ -35,6 +36,7 @@
 #include <sstream>
 #include <string>
 #include <thread>
+#include <utility>
 #include <sys/wait.h>
 #include <vector>
 #include <unistd.h>
@@ -332,6 +334,66 @@ std::filesystem::path saveRawStereoPair(const ffs_viewer::io::BgrFrame &left,
     return output_directory;
 }
 
+std::vector<std::filesystem::path> savedRawPairDirectories() {
+    const std::filesystem::path data_directory = FFS_WORKSPACE_DATA_DIRECTORY;
+    std::vector<std::filesystem::path> directories;
+    std::error_code error;
+    if (!std::filesystem::is_directory(data_directory, error))
+        return directories;
+
+    for (const std::filesystem::directory_entry &entry :
+         std::filesystem::directory_iterator(data_directory, error)) {
+        if (error)
+            throw std::runtime_error("Unable to browse the data directory: " + error.message());
+        if (!entry.is_directory())
+            continue;
+
+        const std::filesystem::path left_path = entry.path() / "left.png";
+        const std::filesystem::path right_path = entry.path() / "right.png";
+        if (std::filesystem::is_regular_file(left_path) &&
+            std::filesystem::is_regular_file(right_path)) {
+            directories.push_back(entry.path());
+        }
+    }
+    std::sort(directories.begin(), directories.end(), std::greater<>());
+    return directories;
+}
+
+ffs_viewer::io::BgrFrame loadRawStereoImage(const std::filesystem::path &image_path) {
+    cv::Mat image = cv::imread(image_path.string(), cv::IMREAD_COLOR);
+    if (image.empty())
+        throw std::runtime_error("Unable to read image: " + image_path.string());
+    if (image.type() != CV_8UC3)
+        throw std::runtime_error("Loaded image is not BGR8: " + image_path.string());
+    if (!image.isContinuous())
+        image = image.clone();
+
+    ffs_viewer::io::BgrFrame frame;
+    frame.width = image.cols;
+    frame.height = image.rows;
+    frame.pixels.assign(image.datastart, image.dataend);
+    if (!frame.valid())
+        throw std::runtime_error("Loaded image is empty: " + image_path.string());
+    return frame;
+}
+
+std::pair<ffs_viewer::io::BgrFrame, ffs_viewer::io::BgrFrame>
+loadRawStereoPair(const std::filesystem::path &directory) {
+    const std::filesystem::path left_path = directory / "left.png";
+    const std::filesystem::path right_path = directory / "right.png";
+    if (!std::filesystem::is_regular_file(left_path) ||
+        !std::filesystem::is_regular_file(right_path)) {
+        throw std::runtime_error("Selected folder must contain left.png and right.png");
+    }
+
+    auto left = loadRawStereoImage(left_path);
+    auto right = loadRawStereoImage(right_path);
+    if (left.width != right.width || left.height != right.height) {
+        throw std::runtime_error("Loaded left.png and right.png have different dimensions");
+    }
+    return {std::move(left), std::move(right)};
+}
+
 void drawLiveDisparity(const ImageTexture &disparity, const std::string &status) {
     ImGui::Begin("Live Disparity");
     ImGui::TextWrapped("%s", status.c_str());
@@ -579,6 +641,9 @@ int main() {
             ffs_viewer::io::BgrFrame captured_raw_left_frame;
             ffs_viewer::io::BgrFrame captured_raw_right_frame;
             bool raw_pair_ready_to_save = false;
+            bool show_load_pair_dialog = false;
+            std::vector<std::filesystem::path> saved_raw_pair_directories;
+            std::string load_pair_status;
             std::optional<ffs_viewer::calibration::RectifiedStereoCamera> active_rectified_camera;
             const std::filesystem::path calibration_result_path = "sentech_stereo_calibration.json";
             std::string calibration_capture_status = "No calibration pair captured";
@@ -623,6 +688,56 @@ int main() {
             std::uint64_t uploaded_disparity_right_frame_id = 0;
             AnyLabelingBridge anylabeling_bridge(FFS_ANYLABELING_EXECUTABLE,
                                                   FFS_ANYLABELING_WORK_DIRECTORY);
+
+            auto startFinalCapture = [&](const ffs_viewer::io::BgrFrame &raw_left,
+                                         const ffs_viewer::io::BgrFrame &raw_right,
+                                         const ffs_viewer::io::BgrFrame &rectified_left,
+                                         const ffs_viewer::io::BgrFrame &rectified_right,
+                                         const ffs_viewer::calibration::RectifiedStereoCamera &rectified_camera,
+                                         const std::string &source) {
+                if (show_final_mask_editor) {
+                    throw std::logic_error(
+                        "Close the Draw window before taking another final capture");
+                }
+                if (!raw_left.valid() || !raw_right.valid() || !rectified_left.valid() ||
+                    !rectified_right.valid()) {
+                    throw std::invalid_argument("Final capture requires a valid stereo pair");
+                }
+
+                captured_raw_left_frame = raw_left;
+                captured_raw_right_frame = raw_right;
+                raw_pair_ready_to_save = true;
+                rectified_left_frame = rectified_left;
+                rectified_right_frame = rectified_right;
+                active_rectified_camera = rectified_camera;
+                show_rectified_images = true;
+
+                // The final FS run owns the GPU. Its input pair is copied by capture(),
+                // so live inference and acquisition can stop before it begins.
+                ffs_pipeline.stop();
+                capture.stop();
+                final_capture_pipeline.capture(rectified_left_frame, rectified_right_frame,
+                                               *active_rectified_camera);
+                image_display_status = "FoundationStereo final capture started from " + source +
+                                       "; live FFS and cameras stopped";
+            };
+
+            auto startFinalCaptureFromRawPair = [&](const ffs_viewer::io::BgrFrame &raw_left,
+                                                    const ffs_viewer::io::BgrFrame &raw_right,
+                                                    const std::string &source) {
+                if (!stereo_rectifier.hasCalibration()) {
+                    throw std::logic_error(
+                        "Load or complete stereo calibration before loading a raw pair");
+                }
+
+                ffs_viewer::io::BgrFrame rectified_left;
+                ffs_viewer::io::BgrFrame rectified_right;
+                stereo_rectifier.rectify(raw_left, raw_right, rectified_left, rectified_right);
+                const auto rectified_camera =
+                    stereo_rectifier.rectifiedCamera(rectified_left.width, rectified_left.height);
+                startFinalCapture(raw_left, raw_right, rectified_left, rectified_right,
+                                  rectified_camera, source);
+            };
 
             auto refreshFinalMask = [&] {
                 if (!displayed_final_capture || final_mask_source.empty() || final_mask.empty())
@@ -860,21 +975,13 @@ int main() {
                         image_display_status =
                             "Enable rectified stereo and wait for a valid frame before Capture";
                     } else {
-                        captured_raw_left_frame = capture.leftFrame();
-                        captured_raw_right_frame = capture.rightFrame();
-                        raw_pair_ready_to_save = captured_raw_left_frame.valid() &&
-                                                 captured_raw_right_frame.valid();
-                        // The final FS run owns the GPU.  Its input pair has already been
-                        // copied by capture(), so it is safe to stop both live workers here.
-                        ffs_pipeline.stop();
-                        capture.stop();
                         try {
-                            final_capture_pipeline.capture(rectified_left_frame, rectified_right_frame,
-                                                           *active_rectified_camera);
-                            image_display_status =
-                                "FoundationStereo final capture started; live FFS and cameras stopped";
+                            startFinalCapture(capture.leftFrame(), capture.rightFrame(),
+                                              rectified_left_frame, rectified_right_frame,
+                                              *active_rectified_camera, "the live camera pair");
                         } catch (const std::exception &error) {
-                            image_display_status = "Final capture error: " + std::string(error.what());
+                            image_display_status = "Final capture error: " +
+                                                   std::string(error.what());
                         }
                     }
                 }
@@ -893,6 +1000,57 @@ int main() {
                     }
                 }
                 ImGui::EndDisabled();
+                ImGui::SameLine();
+                if (ImGui::Button("Load Pair")) {
+                    try {
+                        saved_raw_pair_directories = savedRawPairDirectories();
+                        load_pair_status = "Select a folder from " +
+                                           std::filesystem::path(FFS_WORKSPACE_DATA_DIRECTORY).string();
+                        show_load_pair_dialog = true;
+                    } catch (const std::exception &error) {
+                        image_display_status = "Unable to list saved raw pairs: " +
+                                               std::string(error.what());
+                    }
+                }
+                if (show_load_pair_dialog) {
+                    ImGui::OpenPopup("Load Pair");
+                    show_load_pair_dialog = false;
+                }
+                if (ImGui::BeginPopupModal("Load Pair", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+                    ImGui::TextUnformatted("Choose a saved raw stereo pair folder:");
+                    ImGui::TextWrapped("%s",
+                                       std::filesystem::path(FFS_WORKSPACE_DATA_DIRECTORY).string().c_str());
+                    if (ImGui::Button("Refresh")) {
+                        try {
+                            saved_raw_pair_directories = savedRawPairDirectories();
+                            load_pair_status = "Folder list refreshed";
+                        } catch (const std::exception &error) {
+                            load_pair_status = "Refresh failed: " + std::string(error.what());
+                        }
+                    }
+                    ImGui::Separator();
+                    if (saved_raw_pair_directories.empty()) {
+                        ImGui::TextUnformatted("No folders with left.png and right.png were found.");
+                    }
+                    for (const std::filesystem::path &directory : saved_raw_pair_directories) {
+                        const std::string name = directory.filename().string();
+                        if (!ImGui::Selectable(name.c_str()))
+                            continue;
+                        try {
+                            auto [left, right] = loadRawStereoPair(directory);
+                            startFinalCaptureFromRawPair(left, right, "saved pair " + name);
+                            load_pair_status = "Loaded " + directory.string();
+                            ImGui::CloseCurrentPopup();
+                        } catch (const std::exception &error) {
+                            load_pair_status = "Load failed: " + std::string(error.what());
+                        }
+                    }
+                    ImGui::Separator();
+                    ImGui::TextWrapped("%s", load_pair_status.c_str());
+                    if (ImGui::Button("Cancel"))
+                        ImGui::CloseCurrentPopup();
+                    ImGui::EndPopup();
+                }
                 ImGui::BeginDisabled(!show_final_capture_view || !displayed_final_capture ||
                                      displayed_final_capture->left.pixels.empty() || anylabeling_bridge.running());
                 if (ImGui::Button("Draw Manually") && show_final_capture_view &&

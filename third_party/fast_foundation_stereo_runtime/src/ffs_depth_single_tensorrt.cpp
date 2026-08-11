@@ -173,7 +173,8 @@ FFSSingleEngineInference::FFSSingleEngineInference(const std::string& engine_dir
         if (!registerFFSGWCPlugin()) {
             throw std::runtime_error("[FFS single] failed to register FFSGWCVolume plugin");
         }
-        runtime_.reset(nvinfer1::createInferRuntime(g_trt_logger));
+        nvinfer1::ILogger* logger = ::getLogger();
+        runtime_.reset(nvinfer1::createInferRuntime(logger != nullptr ? *logger : g_trt_logger));
         if (!runtime_) {
             throw std::runtime_error("[FFS single] createInferRuntime returned null");
         }
