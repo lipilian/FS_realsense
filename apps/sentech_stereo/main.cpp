@@ -589,6 +589,7 @@ int main() {
                 if (ImGui::Button("Quit"))
                     glfwSetWindowShouldClose(window, GLFW_TRUE);
                 ImGui::TextUnformatted(capture.status().c_str());
+                ImGui::BeginDisabled(!capture.running());
                 if (ImGui::Button(show_rectified_images ? "Show Raw Images" : "Show Rectified Images")) {
                     if (show_rectified_images) {
                         show_rectified_images = false;
@@ -609,7 +610,9 @@ int main() {
                         }
                     }
                 }
+                ImGui::EndDisabled();
                 ImGui::TextWrapped("%s", image_display_status.c_str());
+                ImGui::BeginDisabled(!show_rectified_images);
                 if (ImGui::Button("Capture")) {
                     if (show_final_mask_editor) {
                         image_display_status =
@@ -633,7 +636,10 @@ int main() {
                         }
                     }
                 }
+                ImGui::EndDisabled();
                 ImGui::SameLine();
+                ImGui::BeginDisabled(!show_final_capture_view || !displayed_final_capture ||
+                                     displayed_final_capture->left.pixels.empty());
                 if (ImGui::Button("Draw") && show_final_capture_view &&
                     displayed_final_capture && !displayed_final_capture->left.pixels.empty()) {
                     const auto &frozen_left = displayed_final_capture->left;
@@ -645,6 +651,7 @@ int main() {
                     show_final_mask_editor = true;
                     refreshFinalMask();
                 }
+                ImGui::EndDisabled();
                 ImGui::TextWrapped("%s", final_capture_pipeline.status().c_str());
                 ImGui::End();
 
