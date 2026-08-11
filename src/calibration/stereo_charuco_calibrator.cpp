@@ -5,6 +5,7 @@
 #include <opencv2/calib3d.hpp>
 
 #include <array>
+#include <cmath>
 #include <filesystem>
 #include <stdexcept>
 #include <string>
@@ -66,6 +67,32 @@ std::vector<double> copyVector(const cv::Mat &matrix) {
     for (std::size_t index = 0; index < matrix.total(); ++index)
         output.push_back(matrix.at<double>(static_cast<int>(index)));
     return output;
+}
+
+cv::Mat matrix3x3(const std::array<double, 9> &values) {
+    cv::Mat matrix(3, 3, CV_64F);
+    for (int row = 0; row < 3; ++row)
+        for (int col = 0; col < 3; ++col)
+            matrix.at<double>(row, col) = values.at(static_cast<std::size_t>(row * 3 + col));
+    return matrix;
+}
+
+cv::Mat distortionMatrix(const std::vector<double> &values, const char *camera_name) {
+    if (values.empty())
+        throw std::invalid_argument(std::string(camera_name) + " distortion vector is empty");
+    return cv::Mat(values, true).reshape(1, 1);
+}
+
+double reprojectionRms(const std::vector<cv::Point2f> &observed,
+                       const std::vector<cv::Point2f> &projected) {
+    if (observed.size() != projected.size() || observed.empty())
+        throw std::invalid_argument("Reprojection points must have equal non-zero size");
+    double squared_error_sum = 0.0;
+    for (std::size_t index = 0; index < observed.size(); ++index) {
+        const cv::Point2f error = observed[index] - projected[index];
+        squared_error_sum += static_cast<double>(error.dot(error));
+    }
+    return std::sqrt(squared_error_sum / static_cast<double>(observed.size()));
 }
 
 } // namespace
@@ -151,6 +178,82 @@ StereoCharucoCalibrationResult calibrateStereoCharuco(
     copyMatrix3x3(rotation, result.right_to_left_rotation);
     for (int index = 0; index < 3; ++index)
         result.right_to_left_translation.at(static_cast<std::size_t>(index)) = translation.at<double>(index);
+    return result;
+}
+
+StereoCharucoCalibrationCheckResult checkStereoCharucoCalibration(
+    const CharucoBoardConfig &config, const StereoCharucoCalibrationResult &calibration,
+    const CharucoDetection &left_detection, const CharucoDetection &right_detection) {
+    validateConfig(config);
+    const cv::Size image_size(left_detection.annotated_frame.width,
+                              left_detection.annotated_frame.height);
+    if (image_size.width <= 0 || image_size.height <= 0 ||
+        right_detection.annotated_frame.width != image_size.width ||
+        right_detection.annotated_frame.height != image_size.height) {
+        throw std::invalid_argument("Calibration check requires equal-size valid stereo frames");
+    }
+
+    const auto dictionary = cv::aruco::getPredefinedDictionary(dictionaryIdFromName(config.dictionary_name));
+    const auto board = cv::aruco::CharucoBoard::create(config.squares_x, config.squares_y,
+                                                         config.square_length_m, config.marker_length_m,
+                                                         dictionary);
+    std::unordered_map<int, CharucoCorner> right_by_id;
+    for (const CharucoCorner &corner : right_detection.corners)
+        right_by_id.emplace(corner.id, corner);
+
+    std::vector<cv::Point3f> object_points;
+    std::vector<cv::Point2f> left_points;
+    std::vector<cv::Point2f> right_points;
+    for (const CharucoCorner &left_corner : left_detection.corners) {
+        const auto right_it = right_by_id.find(left_corner.id);
+        if (right_it == right_by_id.end() || left_corner.id < 0 ||
+            left_corner.id >= static_cast<int>(board->chessboardCorners.size())) {
+            continue;
+        }
+        object_points.push_back(board->chessboardCorners.at(left_corner.id));
+        left_points.emplace_back(left_corner.x, left_corner.y);
+        right_points.emplace_back(right_it->second.x, right_it->second.y);
+    }
+    if (object_points.size() < 4)
+        throw std::runtime_error("Need at least 4 matched ChArUco corners to check calibration");
+
+    const cv::Mat left_camera_matrix = matrix3x3(calibration.left_camera_matrix);
+    const cv::Mat right_camera_matrix = matrix3x3(calibration.right_camera_matrix);
+    const cv::Mat left_distortion = distortionMatrix(calibration.left_distortion, "Left camera");
+    const cv::Mat right_distortion = distortionMatrix(calibration.right_distortion, "Right camera");
+    const cv::Mat stereo_rotation = matrix3x3(calibration.right_to_left_rotation);
+    cv::Mat stereo_translation(3, 1, CV_64F);
+    for (int index = 0; index < 3; ++index)
+        stereo_translation.at<double>(index) =
+            calibration.right_to_left_translation.at(static_cast<std::size_t>(index));
+
+    cv::Mat left_rvec, left_translation;
+    if (!cv::solvePnP(object_points, left_points, left_camera_matrix, left_distortion, left_rvec,
+                      left_translation, false, cv::SOLVEPNP_ITERATIVE)) {
+        throw std::runtime_error("Unable to estimate ChArUco board pose for calibration check");
+    }
+
+    std::vector<cv::Point2f> projected_left;
+    cv::projectPoints(object_points, left_rvec, left_translation, left_camera_matrix, left_distortion,
+                      projected_left);
+    cv::Mat left_rotation;
+    cv::Rodrigues(left_rvec, left_rotation);
+    const cv::Mat right_rotation = stereo_rotation * left_rotation;
+    const cv::Mat right_translation = stereo_rotation * left_translation + stereo_translation;
+    cv::Mat right_rvec;
+    cv::Rodrigues(right_rotation, right_rvec);
+    std::vector<cv::Point2f> projected_right;
+    cv::projectPoints(object_points, right_rvec, right_translation, right_camera_matrix,
+                      right_distortion, projected_right);
+
+    StereoCharucoCalibrationCheckResult result;
+    result.matched_corner_count = static_cast<int>(object_points.size());
+    result.left_reprojection_rms = reprojectionRms(left_points, projected_left);
+    result.right_reprojection_rms = reprojectionRms(right_points, projected_right);
+    result.stereo_reprojection_rms = std::sqrt(
+        (result.left_reprojection_rms * result.left_reprojection_rms +
+         result.right_reprojection_rms * result.right_reprojection_rms) /
+        2.0);
     return result;
 }
 

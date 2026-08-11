@@ -364,6 +364,7 @@ int main() {
             int charuco_dictionary_index = charucoDictionaryIndex(charuco_config.dictionary_name);
             bool live_charuco_detection = false;
             bool collecting_calibration_pair = false;
+            bool checking_calibration = false;
             bool show_calibration_pair = false;
             std::uint64_t last_calibration_left_frame_id = 0;
             std::uint64_t last_calibration_right_frame_id = 0;
@@ -372,6 +373,9 @@ int main() {
             std::size_t selected_calibration_pair_index = 0;
             std::optional<std::size_t> uploaded_calibration_pair_index;
             std::optional<ffs_viewer::calibration::StereoCharucoCalibrationResult> calibration_result;
+            std::optional<ffs_viewer::calibration::CharucoBoardConfig> calibration_board_config;
+            std::optional<ffs_viewer::calibration::StereoCharucoCalibrationCheckResult>
+                calibration_check_result;
             ffs_viewer::calibration::StereoRectifier stereo_rectifier;
             ffs_viewer::inference::SentechFfsPipeline ffs_pipeline(FFS_SENTECH_FFS_ENGINE_DIR);
             ffs_viewer::inference::SentechFinalCapturePipeline final_capture_pipeline(
@@ -392,6 +396,7 @@ int main() {
                     charuco_config = loaded_board_config;
                     charuco_dictionary_index = charucoDictionaryIndex(charuco_config.dictionary_name);
                     calibration_result = std::move(loaded_result);
+                    calibration_board_config = loaded_board_config;
                     stereo_rectifier.setCalibration(*calibration_result);
                     calibration_capture_status = "Loaded calibration from " + calibration_result_path.string();
                 }
@@ -477,8 +482,39 @@ int main() {
                                 calibration_candidates.clear();
                                 collecting_calibration_pair = false;
                                 show_calibration_pair = true;
-                                calibration_capture_status =
-                                    "Selected the smallest timestamp difference from 5 pairs; saved in history";
+                                if (checking_calibration) {
+                                    try {
+                                        if (!calibration_result.has_value() ||
+                                            !calibration_board_config.has_value()) {
+                                            throw std::logic_error(
+                                                "No saved or completed stereo calibration is available");
+                                        }
+                                        const CalibrationPair &captured_pair =
+                                            calibration_pair_history.back();
+                                        if (!sameBoardConfig(captured_pair.board_config,
+                                                             *calibration_board_config)) {
+                                            throw std::logic_error(
+                                                "The active ChArUco board differs from the calibration board");
+                                        }
+                                        calibration_check_result =
+                                            ffs_viewer::calibration::checkStereoCharucoCalibration(
+                                                captured_pair.board_config, *calibration_result,
+                                                captured_pair.left, captured_pair.right);
+                                        calibration_capture_status =
+                                            "Calibration check complete: stereo reprojection RMS " +
+                                            std::to_string(
+                                                calibration_check_result->stereo_reprojection_rms) +
+                                            " px";
+                                    } catch (const std::exception &error) {
+                                        calibration_check_result.reset();
+                                        calibration_capture_status =
+                                            "Calibration check failed: " + std::string(error.what());
+                                    }
+                                    checking_calibration = false;
+                                } else {
+                                    calibration_capture_status =
+                                        "Selected the smallest timestamp difference from 5 pairs; saved in history";
+                                }
                             }
                         }
                     }
@@ -651,11 +687,39 @@ int main() {
                     if (!capture.running()) {
                         calibration_capture_status = "Start both cameras before capturing a calibration pair";
                     } else {
+                        checking_calibration = false;
                         collecting_calibration_pair = true;
                         calibration_candidates.clear();
                         last_calibration_left_frame_id = 0;
                         last_calibration_right_frame_id = 0;
                         calibration_capture_status = "Collecting 5 timestamp candidates";
+                    }
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("Check Calibration")) {
+                    if (!capture.running()) {
+                        calibration_capture_status =
+                            "Start both cameras before checking the calibration";
+                    } else if (collecting_calibration_pair) {
+                        calibration_capture_status =
+                            "Wait for the current calibration-pair capture to finish";
+                    } else if (!calibration_result.has_value() ||
+                               !calibration_board_config.has_value()) {
+                        calibration_capture_status =
+                            "Complete or load a stereo calibration before checking it";
+                    } else if (!sameBoardConfig(charuco_detector.boardConfig(),
+                                                *calibration_board_config)) {
+                        calibration_capture_status =
+                            "Apply the ChArUco board used for the saved calibration before checking it";
+                    } else {
+                        checking_calibration = true;
+                        collecting_calibration_pair = true;
+                        calibration_candidates.clear();
+                        last_calibration_left_frame_id = 0;
+                        last_calibration_right_frame_id = 0;
+                        calibration_check_result.reset();
+                        calibration_capture_status =
+                            "Checking calibration: collecting 5 timestamp candidates";
                     }
                 }
                 ImGui::TextWrapped("%s", calibration_capture_status.c_str());
@@ -676,6 +740,8 @@ int main() {
                         ffs_viewer::calibration::saveStereoCharucoCalibration(
                             calibration_result_path, active_board_config, result);
                         calibration_result = std::move(result);
+                        calibration_board_config = active_board_config;
+                        calibration_check_result.reset();
                         stereo_rectifier.setCalibration(*calibration_result);
                         calibration_capture_status =
                             "Calibration complete and saved: left RMS " +
@@ -693,6 +759,14 @@ int main() {
                     ImGui::Text("RMS: left %.4f, right %.4f, stereo %.4f",
                                 calibration_result->left_rms, calibration_result->right_rms,
                                 calibration_result->stereo_rms);
+                }
+                if (calibration_check_result.has_value()) {
+                    ImGui::Text("Check: %d matched ChArUco corners",
+                                calibration_check_result->matched_corner_count);
+                    ImGui::Text("Reprojection RMS (px): left %.4f, right %.4f, stereo %.4f",
+                                calibration_check_result->left_reprojection_rms,
+                                calibration_check_result->right_reprojection_rms,
+                                calibration_check_result->stereo_reprojection_rms);
                 }
                 ImGui::Separator();
                 ImGui::End();
