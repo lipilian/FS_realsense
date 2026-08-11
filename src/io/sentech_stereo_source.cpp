@@ -7,6 +7,7 @@
 #include <array>
 #include <atomic>
 #include <cstddef>
+#include <cmath>
 #include <cstdlib>
 #include <cstring>
 #include <exception>
@@ -30,23 +31,97 @@ constexpr const char *kRightCameraName = "STC-MCS500U3V(21LJ548)";
 constexpr std::size_t kLatestFramePoolSize = 3;
 constexpr const char *kBalanceWhiteAutoNode = "BalanceWhiteAuto";
 constexpr const char *kContinuousWhiteBalanceValue = "Continuous";
+constexpr const char *kExposureModeNode = "ExposureMode";
+constexpr const char *kTimedExposureModeValue = "Timed";
+constexpr const char *kExposureAutoNode = "ExposureAuto";
+constexpr const char *kExposureAutoOffValue = "Off";
+constexpr const char *kExposureTimeNode = "ExposureTime";
+constexpr double kTargetExposureTimeUs = 50000.0;
+double closestExposureTime(GenApi::CFloatPtr &exposure_time) {
+  const double minimum = exposure_time->GetMin();
+  const double maximum = exposure_time->GetMax();
+  const double target = std::clamp(kTargetExposureTimeUs, minimum, maximum);
+  if (!exposure_time->HasInc())
+    return target;
 
-void setContinuousWhiteBalance(StApi::IStDevice &device, const char *camera_label) {
-    GenApi::CNodeMapPtr node_map(device.GetRemoteIStPort()->GetINodeMap());
-    GenApi::CEnumerationPtr balance_white_auto(node_map->GetNode(kBalanceWhiteAutoNode));
-    if (!GenApi::IsWritable(balance_white_auto)) {
-        throw std::runtime_error(std::string(camera_label) +
-                                 " does not provide a writable BalanceWhiteAuto setting");
+  if (exposure_time->GetIncMode() == GenApi::fixedIncrement) {
+    const double increment = exposure_time->GetInc();
+    if (increment > 0.0) {
+      const double nearest =
+          minimum + std::round((target - minimum) / increment) * increment;
+      return std::clamp(nearest, minimum, maximum);
     }
+    return target;
+  }
 
-    GenApi::CEnumEntryPtr continuous(
-        balance_white_auto->GetEntryByName(kContinuousWhiteBalanceValue));
-    if (!GenApi::IsAvailable(continuous)) {
-        throw std::runtime_error(std::string(camera_label) +
-                                 " does not support continuous white balance");
-    }
+  const auto values = exposure_time->GetListOfValidValues();
+  if (values.size() == 0)
+    return target;
 
-    balance_white_auto->SetIntValue(continuous->GetValue());
+  double closest = values[0];
+  for (std::size_t index = 1; index < values.size(); ++index) {
+    if (std::abs(values[index] - target) < std::abs(closest - target))
+      closest = values[index];
+  }
+  return closest;
+}
+void setTimedExposure(StApi::IStDevice &device, const char *camera_label) {
+  GenApi::CNodeMapPtr node_map(device.GetRemoteIStPort()->GetINodeMap());
+  GenApi::CEnumerationPtr exposure_mode(node_map->GetNode(kExposureModeNode));
+  if (!GenApi::IsWritable(exposure_mode)) {
+    throw std::runtime_error(
+        std::string(camera_label) +
+        " does not provide a writable ExposureMode setting");
+  }
+
+  GenApi::CEnumEntryPtr timed(
+      exposure_mode->GetEntryByName(kTimedExposureModeValue));
+  if (!GenApi::IsAvailable(timed)) {
+    throw std::runtime_error(std::string(camera_label) +
+                             " does not support timed exposure");
+  }
+  exposure_mode->SetIntValue(timed->GetValue());
+
+  GenApi::CEnumerationPtr exposure_auto(node_map->GetNode(kExposureAutoNode));
+  if (GenApi::IsWritable(exposure_auto)) {
+    GenApi::CEnumEntryPtr off(
+        exposure_auto->GetEntryByName(kExposureAutoOffValue));
+    if (GenApi::IsAvailable(off))
+      exposure_auto->SetIntValue(off->GetValue());
+  }
+
+  GenApi::CFloatPtr exposure_time(node_map->GetNode(kExposureTimeNode));
+  if (!GenApi::IsWritable(exposure_time)) {
+    throw std::runtime_error(
+        std::string(camera_label) +
+        " does not provide a writable ExposureTime setting");
+  }
+
+  const double configured_exposure_time = closestExposureTime(exposure_time);
+  exposure_time->SetValue(configured_exposure_time);
+  std::cout << camera_label << " exposure set to " << configured_exposure_time
+            << " us\n";
+}
+
+void setContinuousWhiteBalance(StApi::IStDevice &device,
+                               const char *camera_label) {
+  GenApi::CNodeMapPtr node_map(device.GetRemoteIStPort()->GetINodeMap());
+  GenApi::CEnumerationPtr balance_white_auto(
+      node_map->GetNode(kBalanceWhiteAutoNode));
+  if (!GenApi::IsWritable(balance_white_auto)) {
+    throw std::runtime_error(
+        std::string(camera_label) +
+        " does not provide a writable BalanceWhiteAuto setting");
+  }
+
+  GenApi::CEnumEntryPtr continuous(
+      balance_white_auto->GetEntryByName(kContinuousWhiteBalanceValue));
+  if (!GenApi::IsAvailable(continuous)) {
+    throw std::runtime_error(std::string(camera_label) +
+                             " does not support continuous white balance");
+  }
+
+  balance_white_auto->SetIntValue(continuous->GetValue());
 }
 
 class StereoCapture {
@@ -78,6 +153,7 @@ class StereoCapture {
             }
 
             for (std::size_t index = 0; index < kCameraCount; ++index) {
+                setTimedExposure(*devices_[index], kCameraLabels[index]);
                 setContinuousWhiteBalance(*devices_[index], kCameraLabels[index]);
                 streams_[index].Reset(devices_[index]->CreateIStDataStream(0));
                 converters_[index].Reset(
