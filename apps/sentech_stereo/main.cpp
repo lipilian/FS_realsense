@@ -479,8 +479,10 @@ void drawStereoView(const ImageTexture &left, const ImageTexture &right) {
 
 bool drawCalibrationPair(const ImageTexture &left, const ImageTexture &right,
                          const std::vector<CalibrationPair> &pairs,
-                         std::size_t &selected_pair_index, bool *open) {
-    ImGui::Begin("Calibration Pair", open);
+                         std::size_t &selected_pair_index, bool *open,
+                         const char *window_name = "Calibration Pair",
+                         bool allow_delete = true) {
+    ImGui::Begin(window_name, open);
     if (pairs.empty()) {
         ImGui::TextUnformatted("No calibration pair has been captured.");
         ImGui::End();
@@ -504,7 +506,7 @@ bool drawCalibrationPair(const ImageTexture &left, const ImageTexture &right,
         return false;
     }
     ImGui::SameLine();
-    const bool delete_this_pair = ImGui::Button("Delete This Pair");
+    const bool delete_this_pair = allow_delete && ImGui::Button("Delete This Pair");
     if (delete_this_pair) {
         ImGui::End();
         return true;
@@ -627,6 +629,10 @@ int main() {
             std::vector<CalibrationPair> calibration_pair_history;
             std::size_t selected_calibration_pair_index = 0;
             std::optional<std::size_t> uploaded_calibration_pair_index;
+            std::vector<CalibrationPair> calibration_check_pair_visualization;
+            std::size_t selected_calibration_check_pair_index = 0;
+            bool show_calibration_check_pair = false;
+            bool calibration_check_pair_texture_dirty = false;
             std::optional<ffs_viewer::calibration::StereoCharucoCalibrationResult> calibration_result;
             std::optional<ffs_viewer::calibration::CharucoBoardConfig> calibration_board_config;
             std::optional<ffs_viewer::calibration::StereoCharucoCalibrationCheckResult>
@@ -668,6 +674,8 @@ int main() {
             ImageTexture right_texture;
             ImageTexture calibration_left_texture;
             ImageTexture calibration_right_texture;
+            ImageTexture calibration_check_left_texture;
+            ImageTexture calibration_check_right_texture;
             ImageTexture disparity_texture;
             ffs_viewer::ui::SentechPointCloudViewer point_cloud_viewer;
             ImageTexture final_left_texture;
@@ -816,23 +824,22 @@ int main() {
                                 pair.board_config = charuco_detector.boardConfig();
                                 charuco_detector.detect(best->left, pair.left);
                                 charuco_detector.detect(best->right, pair.right);
-                                if (calibration_pair_history.size() == kMaxCalibrationPairHistory)
-                                    calibration_pair_history.erase(calibration_pair_history.begin());
-                                calibration_pair_history.push_back(std::move(pair));
-                                selected_calibration_pair_index = calibration_pair_history.size() - 1;
-                                uploaded_calibration_pair_index.reset();
                                 calibration_candidates.clear();
                                 collecting_calibration_pair = false;
-                                show_calibration_pair = true;
                                 if (checking_calibration) {
+                                    calibration_check_pair_visualization.clear();
+                                    calibration_check_pair_visualization.push_back(std::move(pair));
+                                    selected_calibration_check_pair_index = 0;
+                                    calibration_check_pair_texture_dirty = true;
+                                    show_calibration_check_pair = true;
+                                    const CalibrationPair &captured_pair =
+                                        calibration_check_pair_visualization.back();
                                     try {
                                         if (!calibration_result.has_value() ||
                                             !calibration_board_config.has_value()) {
                                             throw std::logic_error(
                                                 "No saved or completed stereo calibration is available");
                                         }
-                                        const CalibrationPair &captured_pair =
-                                            calibration_pair_history.back();
                                         if (!sameBoardConfig(captured_pair.board_config,
                                                              *calibration_board_config)) {
                                             throw std::logic_error(
@@ -854,6 +861,12 @@ int main() {
                                     }
                                     checking_calibration = false;
                                 } else {
+                                    if (calibration_pair_history.size() == kMaxCalibrationPairHistory)
+                                        calibration_pair_history.erase(calibration_pair_history.begin());
+                                    calibration_pair_history.push_back(std::move(pair));
+                                    selected_calibration_pair_index = calibration_pair_history.size() - 1;
+                                    uploaded_calibration_pair_index.reset();
+                                    show_calibration_pair = true;
                                     calibration_capture_status =
                                         "Selected the smallest timestamp difference from 5 pairs; saved in history";
                                 }
@@ -1171,7 +1184,19 @@ int main() {
                           "candidates";
                     }
                   }
-                  ImGui::TextWrapped("%s", calibration_capture_status.c_str());
+                  if (calibration_check_result.has_value()) {
+                    constexpr double kMaxCalibrationCheckRmsPx = 1.0;
+                    const bool calibration_check_passed =
+                        calibration_check_result->stereo_reprojection_rms <=
+                        kMaxCalibrationCheckRmsPx;
+                    const ImVec4 check_color =
+                        calibration_check_passed
+                            ? ImVec4(0.20F, 0.90F, 0.30F, 1.0F)
+                            : ImVec4(1.0F, 0.25F, 0.25F, 1.0F);
+                    ImGui::TextColored(check_color, "%s", calibration_capture_status.c_str());
+                  } else {
+                    ImGui::TextWrapped("%s", calibration_capture_status.c_str());
+                  }
                   if (ImGui::Button("Finish Calibration")) {
                     live_charuco_detection = false;
                     const auto active_board_config =
@@ -1239,30 +1264,10 @@ int main() {
                   if (calibration_check_result.has_value()) {
                     ImGui::Text("Check: %d matched ChArUco corners",
                                 calibration_check_result->matched_corner_count);
-                    constexpr double kMaxCalibrationCheckRmsPx = 1.0;
-                    const bool calibration_check_passed =
-                        calibration_check_result->stereo_reprojection_rms <=
-                        kMaxCalibrationCheckRmsPx;
-                    const ImVec4 check_color =
-                        calibration_check_passed
-                            ? ImVec4(0.20F, 0.90F, 0.30F, 1.0F)
-                            : ImVec4(1.0F, 0.25F, 0.25F, 1.0F);
                     ImGui::Text(
                         "Reprojection RMS (px): left %.4f, right %.4f",
                         calibration_check_result->left_reprojection_rms,
                         calibration_check_result->right_reprojection_rms);
-                    ImGui::TextColored(
-                        check_color, "Stereo reprojection RMS: %.4f px",
-                        calibration_check_result->stereo_reprojection_rms);
-                    if (calibration_check_passed) {
-                      ImGui::TextColored(
-                          check_color,
-                          "Calibration check passed (threshold: 1.0 px).");
-                    } else {
-                      ImGui::TextColored(check_color,
-                                         "Calibration error exceeds 1.0 px. "
-                                         "Please recalibrate.");
-                    }
                   }
                   ImGui::Separator();
                   ImGui::End();
@@ -1283,7 +1288,7 @@ int main() {
                     show_final_capture_view && displayed_final_capture != nullptr;
                 drawStereoView(showing_final_capture ? final_left_texture : left_texture,
                                showing_final_capture ? final_right_texture : right_texture);
-                if (show_rectified_images) {
+                if (show_rectified_images && !showing_final_capture) {
                     const auto disparity = ffs_pipeline.latestResult();
                     if (disparity &&
                         (disparity->left_frame_id != uploaded_disparity_left_frame_id ||
@@ -1294,11 +1299,12 @@ int main() {
                         uploaded_disparity_left_frame_id = disparity->left_frame_id;
                         uploaded_disparity_right_frame_id = disparity->right_frame_id;
                     }
+                    drawLivePointCloud(point_cloud_viewer, ffs_pipeline.status());
+                }
+                if (show_rectified_images || showing_final_capture) {
                     drawLiveDisparity(disparity_texture,
                                       showing_final_capture ? "FoundationStereo final disparity"
                                                             : ffs_pipeline.status());
-                    if (!showing_final_capture)
-                        drawLivePointCloud(point_cloud_viewer, ffs_pipeline.status());
                 }
                 if (showing_final_capture)
                     drawFinalPointCloud(final_point_cloud_viewer);
@@ -1382,6 +1388,19 @@ int main() {
                             selected_calibration_pair_index = calibration_pair_history.size() - 1;
                         }
                     }
+                }
+                if (show_calibration_check_pair &&
+                    !calibration_check_pair_visualization.empty()) {
+                    if (calibration_check_pair_texture_dirty) {
+                        const CalibrationPair &pair = calibration_check_pair_visualization.front();
+                        calibration_check_left_texture.upload(pair.left.annotated_frame);
+                        calibration_check_right_texture.upload(pair.right.annotated_frame);
+                        calibration_check_pair_texture_dirty = false;
+                    }
+                    drawCalibrationPair(
+                        calibration_check_left_texture, calibration_check_right_texture,
+                        calibration_check_pair_visualization, selected_calibration_check_pair_index,
+                        &show_calibration_check_pair, "Calibration Check Pair", false);
                 }
 
                 ImGui::Render();
