@@ -366,6 +366,7 @@ int main() {
             bool collecting_calibration_pair = false;
             bool checking_calibration = false;
             bool show_calibration_pair = false;
+            bool show_calibration_panel = false;
             std::uint64_t last_calibration_left_frame_id = 0;
             std::uint64_t last_calibration_right_frame_id = 0;
             std::vector<CalibrationCandidate> calibration_candidates;
@@ -564,8 +565,10 @@ int main() {
                 ImGui_ImplGlfw_NewFrame();
                 ImGui::NewFrame();
 
+                if (!capture.running())
+                    show_calibration_panel = false;
                 // Keep acquisition controls and calibration controls in separate blocks.
-                ImGui::Begin("Acquisition");
+                ImGui::Begin("Control Panel");
                 if (ImGui::Button(capture.running() ? "Stop" : "Start")) {
                     if (capture.running()) {
                         capture.stop();
@@ -585,6 +588,12 @@ int main() {
                         }
                     }
                 }
+                ImGui::SameLine();
+                ImGui::BeginDisabled(!capture.running());
+                if (ImGui::Button(show_calibration_panel ? "End Calibration"
+                                                         : "Start Calibration"))
+                    show_calibration_panel = !show_calibration_panel;
+                ImGui::EndDisabled();
                 ImGui::SameLine();
                 if (ImGui::Button("Quit"))
                     glfwSetWindowShouldClose(window, GLFW_TRUE);
@@ -655,158 +664,194 @@ int main() {
                 ImGui::TextWrapped("%s", final_capture_pipeline.status().c_str());
                 ImGui::End();
 
-                ImGui::Begin("Calibration");
-                ImGui::InputInt("Squares X", &charuco_config.squares_x);
-                ImGui::InputInt("Squares Y", &charuco_config.squares_y);
-                ImGui::InputFloat("Square length (m)", &charuco_config.square_length_m, 0.001F,
-                                  0.010F, "%.4f");
-                ImGui::InputFloat("Marker length (m)", &charuco_config.marker_length_m, 0.001F,
-                                  0.010F, "%.4f");
-                ImGui::Combo("Dictionary", &charuco_dictionary_index,
-                             kCharucoDictionaryNames.data(),
-                             static_cast<int>(kCharucoDictionaryNames.size()));
-                if (ImGui::Button("Apply ChArUco Board")) {
-                    charuco_config.dictionary_name =
-                        kCharucoDictionaryNames.at(static_cast<std::size_t>(charuco_dictionary_index));
+                if (show_calibration_panel) {
+                  ImGui::Begin("Calibration");
+                  ImGui::InputInt("Squares X", &charuco_config.squares_x);
+                  ImGui::InputInt("Squares Y", &charuco_config.squares_y);
+                  ImGui::InputFloat("Square length (m)",
+                                    &charuco_config.square_length_m, 0.001F,
+                                    0.010F, "%.4f");
+                  ImGui::InputFloat("Marker length (m)",
+                                    &charuco_config.marker_length_m, 0.001F,
+                                    0.010F, "%.4f");
+                  ImGui::Combo(
+                      "Dictionary", &charuco_dictionary_index,
+                      kCharucoDictionaryNames.data(),
+                      static_cast<int>(kCharucoDictionaryNames.size()));
+                  if (ImGui::Button("Apply ChArUco Board")) {
+                    charuco_config.dictionary_name = kCharucoDictionaryNames.at(
+                        static_cast<std::size_t>(charuco_dictionary_index));
                     try {
-                        charuco_detector.setBoardConfig(charuco_config);
-                        charuco_detector.saveBoardConfig(charuco_config_path);
-                        charuco_config_status = "Applied and saved to " + charuco_config_path.string();
+                      charuco_detector.setBoardConfig(charuco_config);
+                      charuco_detector.saveBoardConfig(charuco_config_path);
+                      charuco_config_status = "Applied and saved to " +
+                                              charuco_config_path.string();
                     } catch (const std::exception &error) {
-                        charuco_config_status = "Board parameter error: " + std::string(error.what());
+                      charuco_config_status =
+                          "Board parameter error: " + std::string(error.what());
                     }
-                }
-                ImGui::TextWrapped("%s", charuco_config_status.c_str());
-                ImGui::Separator();
-                if (ImGui::Button(live_charuco_detection ? "Stop Live ChArUco Detection"
-                                                         : "Live ChArUco Detection")) {
+                  }
+                  ImGui::TextWrapped("%s", charuco_config_status.c_str());
+                  ImGui::Separator();
+                  if (ImGui::Button(live_charuco_detection
+                                        ? "Stop Live ChArUco Detection"
+                                        : "Live ChArUco Detection")) {
                     live_charuco_detection = !live_charuco_detection;
-                }
-                ImGui::TextUnformatted(live_charuco_detection ? "Live detection enabled"
-                                                               : "Live detection disabled");
-                if (live_charuco_detection) {
-                    ImGui::Text("Left:  %d markers, %d ChArUco corners", left_charuco.marker_count,
+                  }
+                  ImGui::TextUnformatted(live_charuco_detection
+                                             ? "Live detection enabled"
+                                             : "Live detection disabled");
+                  if (live_charuco_detection) {
+                    ImGui::Text("Left:  %d markers, %d ChArUco corners",
+                                left_charuco.marker_count,
                                 left_charuco.corner_count);
-                    ImGui::Text("Right: %d markers, %d ChArUco corners", right_charuco.marker_count,
+                    ImGui::Text("Right: %d markers, %d ChArUco corners",
+                                right_charuco.marker_count,
                                 right_charuco.corner_count);
-                }
-                ImGui::Separator();
-                if (ImGui::Button("Capture One Calibration Pair")) {
+                  }
+                  ImGui::Separator();
+                  if (ImGui::Button("Capture One Calibration Pair")) {
                     if (!capture.running()) {
-                        calibration_capture_status = "Start both cameras before capturing a calibration pair";
+                      calibration_capture_status =
+                          "Start both cameras before capturing a calibration "
+                          "pair";
                     } else {
-                        checking_calibration = false;
-                        collecting_calibration_pair = true;
-                        calibration_candidates.clear();
-                        last_calibration_left_frame_id = 0;
-                        last_calibration_right_frame_id = 0;
-                        calibration_capture_status = "Collecting 5 timestamp candidates";
+                      checking_calibration = false;
+                      collecting_calibration_pair = true;
+                      calibration_candidates.clear();
+                      last_calibration_left_frame_id = 0;
+                      last_calibration_right_frame_id = 0;
+                      calibration_capture_status =
+                          "Collecting 5 timestamp candidates";
                     }
-                }
-                ImGui::SameLine();
-                if (ImGui::Button("Check Calibration")) {
+                  }
+                  ImGui::SameLine();
+                  if (ImGui::Button("Check Calibration")) {
                     if (!capture.running()) {
-                        calibration_capture_status =
-                            "Start both cameras before checking the calibration";
+                      calibration_capture_status =
+                          "Start both cameras before checking the calibration";
                     } else if (collecting_calibration_pair) {
-                        calibration_capture_status =
-                            "Wait for the current calibration-pair capture to finish";
+                      calibration_capture_status =
+                          "Wait for the current calibration-pair capture to "
+                          "finish";
                     } else if (!calibration_result.has_value() ||
                                !calibration_board_config.has_value()) {
-                        calibration_capture_status =
-                            "Complete or load a stereo calibration before checking it";
+                      calibration_capture_status =
+                          "Complete or load a stereo calibration before "
+                          "checking it";
                     } else if (!sameBoardConfig(charuco_detector.boardConfig(),
                                                 *calibration_board_config)) {
-                        calibration_capture_status =
-                            "Apply the ChArUco board used for the saved calibration before checking it";
+                      calibration_capture_status =
+                          "Apply the ChArUco board used for the saved "
+                          "calibration before checking it";
                     } else {
-                        checking_calibration = true;
-                        collecting_calibration_pair = true;
-                        calibration_candidates.clear();
-                        last_calibration_left_frame_id = 0;
-                        last_calibration_right_frame_id = 0;
-                        calibration_check_result.reset();
-                        calibration_capture_status =
-                            "Checking calibration: collecting 5 timestamp candidates";
+                      checking_calibration = true;
+                      collecting_calibration_pair = true;
+                      calibration_candidates.clear();
+                      last_calibration_left_frame_id = 0;
+                      last_calibration_right_frame_id = 0;
+                      calibration_check_result.reset();
+                      calibration_capture_status =
+                          "Checking calibration: collecting 5 timestamp "
+                          "candidates";
                     }
-                }
-                ImGui::TextWrapped("%s", calibration_capture_status.c_str());
-                if (ImGui::Button("Finish Calibration")) {
+                  }
+                  ImGui::TextWrapped("%s", calibration_capture_status.c_str());
+                  if (ImGui::Button("Finish Calibration")) {
                     live_charuco_detection = false;
-                    const auto active_board_config = charuco_detector.boardConfig();
-                    std::vector<ffs_viewer::calibration::CharucoDetection> left_detections;
-                    std::vector<ffs_viewer::calibration::CharucoDetection> right_detections;
-                    for (const CalibrationPair &pair : calibration_pair_history) {
-                        if (sameBoardConfig(pair.board_config, active_board_config)) {
-                            left_detections.push_back(pair.left);
-                            right_detections.push_back(pair.right);
-                        }
+                    const auto active_board_config =
+                        charuco_detector.boardConfig();
+                    std::vector<ffs_viewer::calibration::CharucoDetection>
+                        left_detections;
+                    std::vector<ffs_viewer::calibration::CharucoDetection>
+                        right_detections;
+                    for (const CalibrationPair &pair :
+                         calibration_pair_history) {
+                      if (sameBoardConfig(pair.board_config,
+                                          active_board_config)) {
+                        left_detections.push_back(pair.left);
+                        right_detections.push_back(pair.right);
+                      }
                     }
                     try {
-                        auto result = ffs_viewer::calibration::calibrateStereoCharuco(
-                            active_board_config, left_detections, right_detections);
-                        ffs_viewer::calibration::saveStereoCharucoCalibration(
-                            calibration_result_path, active_board_config, result);
-                        calibration_result = std::move(result);
-                        calibration_board_config = active_board_config;
-                        calibration_check_result.reset();
-                        stereo_rectifier.setCalibration(*calibration_result);
-                        calibration_capture_status =
-                            "Calibration complete and saved: left RMS " +
-                            std::to_string(calibration_result->left_rms) + ", right RMS " +
-                            std::to_string(calibration_result->right_rms) + ", stereo RMS " +
-                            std::to_string(calibration_result->stereo_rms);
+                      auto result =
+                          ffs_viewer::calibration::calibrateStereoCharuco(
+                              active_board_config, left_detections,
+                              right_detections);
+                      ffs_viewer::calibration::saveStereoCharucoCalibration(
+                          calibration_result_path, active_board_config, result);
+                      calibration_result = std::move(result);
+                      calibration_board_config = active_board_config;
+                      calibration_check_result.reset();
+                      stereo_rectifier.setCalibration(*calibration_result);
+                      calibration_capture_status =
+                          "Calibration complete and saved: left RMS " +
+                          std::to_string(calibration_result->left_rms) +
+                          ", right RMS " +
+                          std::to_string(calibration_result->right_rms) +
+                          ", stereo RMS " +
+                          std::to_string(calibration_result->stereo_rms);
                     } catch (const std::exception &error) {
-                        calibration_capture_status = "Calibration failed: " + std::string(error.what());
+                      calibration_capture_status =
+                          "Calibration failed: " + std::string(error.what());
                     }
-                }
-                if (calibration_result.has_value()) {
+                  }
+                  if (calibration_result.has_value()) {
                     ImGui::Text("Single-camera pairs: %d, stereo pairs: %d",
                                 calibration_result->single_camera_pair_count,
                                 calibration_result->stereo_pair_count);
                     constexpr double kMaxCalibrationRmsPx = 1.0;
                     const bool calibration_passed =
                         calibration_result->stereo_rms <= kMaxCalibrationRmsPx;
-                    const ImVec4 calibration_color = calibration_passed
-                                                        ? ImVec4(0.20F, 0.90F, 0.30F, 1.0F)
-                                                        : ImVec4(1.0F, 0.25F, 0.25F, 1.0F);
-                    ImGui::Text("RMS: left %.4f, right %.4f", calibration_result->left_rms,
+                    const ImVec4 calibration_color =
+                        calibration_passed ? ImVec4(0.20F, 0.90F, 0.30F, 1.0F)
+                                           : ImVec4(1.0F, 0.25F, 0.25F, 1.0F);
+                    ImGui::Text("RMS: left %.4f, right %.4f",
+                                calibration_result->left_rms,
                                 calibration_result->right_rms);
                     ImGui::TextColored(calibration_color, "Stereo RMS: %.4f px",
                                        calibration_result->stereo_rms);
                     if (calibration_passed) {
-                        ImGui::TextColored(calibration_color,
-                                           "Calibration passed (threshold: 1.0 px).");
+                      ImGui::TextColored(
+                          calibration_color,
+                          "Calibration passed (threshold: 1.0 px).");
                     } else {
-                        ImGui::TextColored(calibration_color,
-                                           "Calibration error exceeds 1.0 px. Please recalibrate.");
+                      ImGui::TextColored(calibration_color,
+                                         "Calibration error exceeds 1.0 px. "
+                                         "Please recalibrate.");
                     }
-                }
-                if (calibration_check_result.has_value()) {
+                  }
+                  if (calibration_check_result.has_value()) {
                     ImGui::Text("Check: %d matched ChArUco corners",
                                 calibration_check_result->matched_corner_count);
                     constexpr double kMaxCalibrationCheckRmsPx = 1.0;
                     const bool calibration_check_passed =
                         calibration_check_result->stereo_reprojection_rms <=
                         kMaxCalibrationCheckRmsPx;
-                    const ImVec4 check_color = calibration_check_passed
-                                                   ? ImVec4(0.20F, 0.90F, 0.30F, 1.0F)
-                                                   : ImVec4(1.0F, 0.25F, 0.25F, 1.0F);
-                    ImGui::Text("Reprojection RMS (px): left %.4f, right %.4f",
-                                calibration_check_result->left_reprojection_rms,
-                                calibration_check_result->right_reprojection_rms);
-                    ImGui::TextColored(check_color, "Stereo reprojection RMS: %.4f px",
-                                       calibration_check_result->stereo_reprojection_rms);
+                    const ImVec4 check_color =
+                        calibration_check_passed
+                            ? ImVec4(0.20F, 0.90F, 0.30F, 1.0F)
+                            : ImVec4(1.0F, 0.25F, 0.25F, 1.0F);
+                    ImGui::Text(
+                        "Reprojection RMS (px): left %.4f, right %.4f",
+                        calibration_check_result->left_reprojection_rms,
+                        calibration_check_result->right_reprojection_rms);
+                    ImGui::TextColored(
+                        check_color, "Stereo reprojection RMS: %.4f px",
+                        calibration_check_result->stereo_reprojection_rms);
                     if (calibration_check_passed) {
-                        ImGui::TextColored(check_color,
-                                           "Calibration check passed (threshold: 1.0 px).");
+                      ImGui::TextColored(
+                          check_color,
+                          "Calibration check passed (threshold: 1.0 px).");
                     } else {
-                        ImGui::TextColored(check_color,
-                                           "Calibration error exceeds 1.0 px. Please recalibrate.");
+                      ImGui::TextColored(check_color,
+                                         "Calibration error exceeds 1.0 px. "
+                                         "Please recalibrate.");
                     }
+                  }
+                  ImGui::Separator();
+                  ImGui::End();
                 }
-                ImGui::Separator();
-                ImGui::End();
 
                 const auto final_capture = final_capture_pipeline.latestResult();
                 if (!show_final_mask_editor && final_capture && final_capture != displayed_final_capture) {
