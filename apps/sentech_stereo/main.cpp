@@ -12,10 +12,12 @@
 #include "ffs_viewer/io/sentech_stereo_source.hpp"
 #include "ffs_viewer/ui/sentech_point_cloud_viewer.hpp"
 #include "opengl_point_cloud_viewer.hpp"
+#include <opencv2/imgcodecs.hpp>
 #include <opencv2/imgproc.hpp>
 #include <algorithm>
 #include <atomic>
 #include <array>
+#include <cerrno>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
@@ -25,12 +27,18 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <spawn.h>
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <sys/wait.h>
 #include <vector>
+#include <unistd.h>
+extern char **environ;
+
 
 namespace {
+
 
 constexpr std::array<const char *, 16> kCharucoDictionaryNames{
     "DICT_4X4_50", "DICT_4X4_100", "DICT_4X4_250", "DICT_4X4_1000", "DICT_5X5_50",
@@ -46,6 +54,156 @@ int charucoDictionaryIndex(const std::string &name) {
     }
     return 0;
 }
+struct AnyLabelingMask {
+    cv::Mat mask;
+    int polygon_count = 0;
+};
+
+class AnyLabelingBridge final {
+  public:
+    AnyLabelingBridge(std::filesystem::path executable, std::filesystem::path work_directory)
+        : executable_(std::move(executable)), work_directory_(std::move(work_directory)),
+          image_path_(work_directory_ / "final_left.png"),
+          annotation_path_(work_directory_ / "final_left.json") {}
+
+    bool running() const noexcept {
+        return process_id_ > 0;
+    }
+
+    const std::string &status() const noexcept {
+        return status_;
+    }
+
+    void launch(const ffs_viewer::io::BgrFrame &frame) {
+        if (running())
+            throw std::logic_error("AnyLabeling is already running");
+        if (!frame.valid())
+            throw std::invalid_argument("AnyLabeling requires a valid final-capture image");
+        image_width_ = frame.width;
+        image_height_ = frame.height;
+        if (!std::filesystem::is_regular_file(executable_)) {
+            throw std::runtime_error("AnyLabeling executable was not found: " + executable_.string());
+        }
+
+        std::filesystem::create_directories(work_directory_);
+        std::error_code error;
+        std::filesystem::remove(annotation_path_, error);
+        if (error) {
+            throw std::runtime_error("Unable to replace AnyLabeling annotation JSON: " +
+                                     error.message());
+        }
+
+        const cv::Mat image(frame.height, frame.width, CV_8UC3,
+                            const_cast<std::uint8_t *>(frame.pixels.data()));
+        if (!cv::imwrite(image_path_.string(), image))
+            throw std::runtime_error("Unable to write AnyLabeling input image: " + image_path_.string());
+
+        std::vector<std::string> arguments{executable_.string(), image_path_.string(), "--output",
+                                           annotation_path_.string(), "--autosave", "--nodata"};
+        std::vector<char *> argv;
+        argv.reserve(arguments.size() + 1);
+        for (std::string &argument : arguments)
+            argv.push_back(argument.data());
+        argv.push_back(nullptr);
+
+        pid_t child_process = -1;
+        const int spawn_error = posix_spawn(&child_process, executable_.c_str(), nullptr, nullptr,
+                                            argv.data(), environ);
+        if (spawn_error != 0) {
+            throw std::runtime_error("Unable to launch AnyLabeling: " +
+                                     std::string(std::strerror(spawn_error)));
+        }
+        process_id_ = child_process;
+        status_ = "AnyLabeling is open. Save the annotation, then close AnyLabeling to import the mask.";
+    }
+
+    std::optional<AnyLabelingMask> pollImport() {
+        if (!running())
+            return std::nullopt;
+
+        int child_status = 0;
+        const pid_t wait_result = waitpid(process_id_, &child_status, WNOHANG);
+        if (wait_result == 0)
+            return std::nullopt;
+        if (wait_result < 0) {
+            process_id_ = -1;
+            throw std::runtime_error("Unable to monitor AnyLabeling: " +
+                                     std::string(std::strerror(errno)));
+        }
+        process_id_ = -1;
+        if (!WIFEXITED(child_status) || WEXITSTATUS(child_status) != 0) {
+            status_ = "AnyLabeling closed without a successful exit; mask was not changed.";
+            throw std::runtime_error(status_);
+        }
+
+        AnyLabelingMask imported_mask = loadMask();
+        status_ = "Imported " + std::to_string(imported_mask.polygon_count) +
+                  " AnyLabeling polygon(s) from " + annotation_path_.string();
+        return imported_mask;
+    }
+
+  private:
+    AnyLabelingMask loadMask() const {
+        cv::FileStorage storage(annotation_path_.string(), cv::FileStorage::READ);
+        if (!storage.isOpened())
+            throw std::runtime_error("AnyLabeling did not save an annotation JSON");
+
+        const cv::FileNode shapes = storage["shapes"];
+        if (shapes.empty() || !shapes.isSeq())
+            throw std::runtime_error("AnyLabeling JSON has no shapes array");
+
+        cv::Mat mask(image_height_, image_width_, CV_8UC1, cv::Scalar(0));
+        int polygon_count = 0;
+        for (auto shape_it = shapes.begin(); shape_it != shapes.end(); ++shape_it) {
+            const cv::FileNode shape = *shape_it;
+            const cv::FileNode points_node = shape["points"];
+            if (points_node.empty() || !points_node.isSeq())
+                continue;
+
+            std::vector<cv::Point> polygon;
+            for (auto point_it = points_node.begin(); point_it != points_node.end(); ++point_it) {
+                const cv::FileNode point = *point_it;
+                if (!point.isSeq() || point.size() != 2)
+                    continue;
+                polygon.emplace_back(cvRound(static_cast<double>(point[0])),
+                                     cvRound(static_cast<double>(point[1])));
+            }
+
+            const cv::FileNode type_node = shape["shape_type"];
+            const std::string shape_type =
+                type_node.empty() ? "polygon" : static_cast<std::string>(type_node);
+            if (shape_type == "rectangle" && polygon.size() == 2) {
+                const cv::Point top_left(std::min(polygon[0].x, polygon[1].x),
+                                         std::min(polygon[0].y, polygon[1].y));
+                const cv::Point bottom_right(std::max(polygon[0].x, polygon[1].x),
+                                             std::max(polygon[0].y, polygon[1].y));
+                polygon = {top_left, {bottom_right.x, top_left.y}, bottom_right,
+                           {top_left.x, bottom_right.y}};
+            }
+            if (shape_type != "polygon" && shape_type != "rectangle")
+                continue;
+            if (polygon.size() < 3)
+                continue;
+
+            cv::fillPoly(mask, std::vector<std::vector<cv::Point>>{polygon}, cv::Scalar(255),
+                         cv::LINE_8);
+            ++polygon_count;
+        }
+        if (polygon_count == 0)
+            throw std::runtime_error("AnyLabeling JSON contains no supported polygon or rectangle");
+        return {std::move(mask), polygon_count};
+    }
+
+    std::filesystem::path executable_;
+    std::filesystem::path work_directory_;
+    std::filesystem::path image_path_;
+    std::filesystem::path annotation_path_;
+    pid_t process_id_ = -1;
+    int image_width_ = 0;
+    int image_height_ = 0;
+    std::string status_ = "AnyLabeling is idle";
+};
+
 
 class ImageTexture {
   public:
@@ -426,6 +584,8 @@ int main() {
             cv::Point previous_final_mask_pixel;
             std::uint64_t uploaded_disparity_left_frame_id = 0;
             std::uint64_t uploaded_disparity_right_frame_id = 0;
+            AnyLabelingBridge anylabeling_bridge(FFS_ANYLABELING_EXECUTABLE,
+                                                  FFS_ANYLABELING_WORK_DIRECTORY);
 
             auto refreshFinalMask = [&] {
                 if (!displayed_final_capture || final_mask_source.empty() || final_mask.empty())
@@ -446,6 +606,35 @@ int main() {
 
             while (!glfwWindowShouldClose(window)) {
                 glfwPollEvents();
+                try {
+                    if (const auto imported_mask = anylabeling_bridge.pollImport()) {
+                        if (!displayed_final_capture) {
+                            throw std::logic_error(
+                                "AnyLabeling mask returned without an active final capture");
+                        }
+                        const auto &frozen_left = displayed_final_capture->left;
+                        if (imported_mask->mask.cols != frozen_left.width ||
+                            imported_mask->mask.rows != frozen_left.height) {
+                            throw std::runtime_error(
+                                "AnyLabeling mask dimensions differ from the final-capture image");
+                        }
+                        final_mask_source =
+                            cv::Mat(frozen_left.height, frozen_left.width, CV_8UC3,
+                                    const_cast<std::uint8_t *>(frozen_left.pixels.data()))
+                                .clone();
+                        final_mask = imported_mask->mask;
+                        final_mask_stroke_active = false;
+                        show_final_mask_editor = true;
+                        refreshFinalMask();
+                        image_display_status = "Imported AnyLabeling mask with " +
+                                               std::to_string(imported_mask->polygon_count) +
+                                               " polygon(s)";
+                    }
+                } catch (const std::exception &error) {
+                    image_display_status =
+                        "AnyLabeling import failed: " + std::string(error.what());
+                }
+
                 try {
                     capture.poll();
                     if (collecting_calibration_pair && capture.running()) {
@@ -648,8 +837,8 @@ int main() {
                 ImGui::EndDisabled();
                 ImGui::SameLine();
                 ImGui::BeginDisabled(!show_final_capture_view || !displayed_final_capture ||
-                                     displayed_final_capture->left.pixels.empty());
-                if (ImGui::Button("Draw") && show_final_capture_view &&
+                                     displayed_final_capture->left.pixels.empty() || anylabeling_bridge.running());
+                if (ImGui::Button("Draw Manually") && show_final_capture_view &&
                     displayed_final_capture && !displayed_final_capture->left.pixels.empty()) {
                     const auto &frozen_left = displayed_final_capture->left;
                     final_mask_source = cv::Mat(frozen_left.height, frozen_left.width, CV_8UC3,
@@ -660,8 +849,19 @@ int main() {
                     show_final_mask_editor = true;
                     refreshFinalMask();
                 }
+                ImGui::SameLine();
+                if (ImGui::Button("AnyLabeling Draw")) {
+                    try {
+                        anylabeling_bridge.launch(displayed_final_capture->left);
+                        image_display_status = anylabeling_bridge.status();
+                    } catch (const std::exception &error) {
+                        image_display_status =
+                            "Unable to start AnyLabeling: " + std::string(error.what());
+                    }
+                }
                 ImGui::EndDisabled();
                 ImGui::TextWrapped("%s", final_capture_pipeline.status().c_str());
+                ImGui::TextWrapped("%s", anylabeling_bridge.status().c_str());
                 ImGui::End();
 
                 if (show_calibration_panel) {

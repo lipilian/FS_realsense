@@ -28,6 +28,26 @@ constexpr std::array<const char *, kCameraCount> kCameraLabels{"Left camera", "R
 constexpr const char *kLeftCameraName = "STC-MCS500U3V(21LJ530)";
 constexpr const char *kRightCameraName = "STC-MCS500U3V(21LJ548)";
 constexpr std::size_t kLatestFramePoolSize = 3;
+constexpr const char *kBalanceWhiteAutoNode = "BalanceWhiteAuto";
+constexpr const char *kContinuousWhiteBalanceValue = "Continuous";
+
+void setContinuousWhiteBalance(StApi::IStDevice &device, const char *camera_label) {
+    GenApi::CNodeMapPtr node_map(device.GetRemoteIStPort()->GetINodeMap());
+    GenApi::CEnumerationPtr balance_white_auto(node_map->GetNode(kBalanceWhiteAutoNode));
+    if (!GenApi::IsWritable(balance_white_auto)) {
+        throw std::runtime_error(std::string(camera_label) +
+                                 " does not provide a writable BalanceWhiteAuto setting");
+    }
+
+    GenApi::CEnumEntryPtr continuous(
+        balance_white_auto->GetEntryByName(kContinuousWhiteBalanceValue));
+    if (!GenApi::IsAvailable(continuous)) {
+        throw std::runtime_error(std::string(camera_label) +
+                                 " does not support continuous white balance");
+    }
+
+    balance_white_auto->SetIntValue(continuous->GetValue());
+}
 
 class StereoCapture {
   public:
@@ -58,6 +78,7 @@ class StereoCapture {
             }
 
             for (std::size_t index = 0; index < kCameraCount; ++index) {
+                setContinuousWhiteBalance(*devices_[index], kCameraLabels[index]);
                 streams_[index].Reset(devices_[index]->CreateIStDataStream(0));
                 converters_[index].Reset(
                     StApi::CreateIStConverter(StApi::StConverterType_PixelFormat));

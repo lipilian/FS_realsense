@@ -39,6 +39,10 @@ set(FFS_VIEWER_DEFAULT_FS_ENGINE_DIR
 set(FFS_VIEWER_DEFAULT_CONFIG
     "${CMAKE_CURRENT_SOURCE_DIR}/config/offline_validate.yaml" CACHE FILEPATH
     "Default offline-validation configuration file")
+set(FFS_ANYLABELING_EXECUTABLE "/home/liu4000/miniconda3/envs/anylabeling/bin/anylabeling"
+    CACHE FILEPATH "Path to the AnyLabeling executable used by sentech_stereo")
+set(FFS_ANYLABELING_WORK_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/data/anylabeling"
+    CACHE PATH "Fixed directory for the AnyLabeling input image and output JSON")
 
 find_package(CUDAToolkit REQUIRED)
 find_package(Threads REQUIRED)
@@ -99,7 +103,7 @@ if(FFS_VIEWER_BUILD_SENTECH_DUAL_CONNECT)
       "FFS_VIEWER_BUILD_SENTECH_DUAL_CONNECT.")
   endif()
 
-  find_package(OpenCV 4 REQUIRED COMPONENTS core imgproc aruco calib3d)
+  find_package(OpenCV 4 REQUIRED COMPONENTS core imgcodecs imgproc aruco calib3d)
   find_package(OpenGL REQUIRED)
   find_package(glfw3 REQUIRED)
   find_package(GLEW REQUIRED)
@@ -137,6 +141,8 @@ if(FFS_VIEWER_BUILD_SENTECH_DUAL_CONNECT)
   target_compile_definitions(sentech_stereo PRIVATE
     FFS_SENTECH_GENTL_DIRECTORY="${FFS_SENTECH_ROOT}/lib"
     FFS_SENTECH_FFS_ENGINE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/models/ffs_608x512"
+    FFS_ANYLABELING_EXECUTABLE="${FFS_ANYLABELING_EXECUTABLE}"
+    FFS_ANYLABELING_WORK_DIRECTORY="${FFS_ANYLABELING_WORK_DIRECTORY}"
     FFS_SENTECH_FS_ENGINE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/models/fs_608x512_iters32"
   )
   target_include_directories(sentech_stereo PRIVATE
