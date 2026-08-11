@@ -17,18 +17,22 @@
 #include <algorithm>
 #include <atomic>
 #include <array>
+#include <chrono>
 #include <cerrno>
 #include <cstddef>
 #include <cstdint>
+#include <ctime>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <iomanip>
 #include <iostream>
 #include <memory>
 #include <mutex>
 #include <optional>
 #include <spawn.h>
 #include <stdexcept>
+#include <sstream>
 #include <string>
 #include <thread>
 #include <sys/wait.h>
@@ -298,6 +302,36 @@ std::uint64_t timestampDifference(std::uint64_t left, std::uint64_t right) {
     return left >= right ? left - right : right - left;
 }
 
+std::filesystem::path saveRawStereoPair(const ffs_viewer::io::BgrFrame &left,
+                                         const ffs_viewer::io::BgrFrame &right) {
+    if (!left.valid() || !right.valid())
+        throw std::invalid_argument("Saving a raw stereo pair requires two valid frames");
+
+    const std::time_t now = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
+    std::tm local_time{};
+    if (localtime_r(&now, &local_time) == nullptr)
+        throw std::runtime_error("Unable to determine the local time for the raw-pair directory");
+
+    std::ostringstream directory_name_stream;
+    directory_name_stream << std::put_time(&local_time, "%Y%m%d_%H%M%S");
+    const std::string directory_name = directory_name_stream.str();
+    const std::filesystem::path data_directory = FFS_WORKSPACE_DATA_DIRECTORY;
+    std::filesystem::path output_directory = data_directory / directory_name;
+    for (std::size_t suffix = 1; std::filesystem::exists(output_directory); ++suffix)
+        output_directory = data_directory / (directory_name + "_" + std::to_string(suffix));
+    std::filesystem::create_directories(output_directory);
+
+    const cv::Mat left_image(left.height, left.width, CV_8UC3,
+                             const_cast<std::uint8_t *>(left.pixels.data()));
+    const cv::Mat right_image(right.height, right.width, CV_8UC3,
+                              const_cast<std::uint8_t *>(right.pixels.data()));
+    if (!cv::imwrite((output_directory / "left.png").string(), left_image) ||
+        !cv::imwrite((output_directory / "right.png").string(), right_image)) {
+        throw std::runtime_error("Unable to save the raw stereo pair to " + output_directory.string());
+    }
+    return output_directory;
+}
+
 void drawLiveDisparity(const ImageTexture &disparity, const std::string &status) {
     ImGui::Begin("Live Disparity");
     ImGui::TextWrapped("%s", status.c_str());
@@ -542,6 +576,9 @@ int main() {
             bool show_rectified_images = false;
             ffs_viewer::io::BgrFrame rectified_left_frame;
             ffs_viewer::io::BgrFrame rectified_right_frame;
+            ffs_viewer::io::BgrFrame captured_raw_left_frame;
+            ffs_viewer::io::BgrFrame captured_raw_right_frame;
+            bool raw_pair_ready_to_save = false;
             std::optional<ffs_viewer::calibration::RectifiedStereoCamera> active_rectified_camera;
             const std::filesystem::path calibration_result_path = "sentech_stereo_calibration.json";
             std::string calibration_capture_status = "No calibration pair captured";
@@ -820,6 +857,10 @@ int main() {
                         image_display_status =
                             "Enable rectified stereo and wait for a valid frame before Capture";
                     } else {
+                        captured_raw_left_frame = capture.leftFrame();
+                        captured_raw_right_frame = capture.rightFrame();
+                        raw_pair_ready_to_save = captured_raw_left_frame.valid() &&
+                                                 captured_raw_right_frame.valid();
                         // The final FS run owns the GPU.  Its input pair has already been
                         // copied by capture(), so it is safe to stop both live workers here.
                         ffs_pipeline.stop();
@@ -836,6 +877,19 @@ int main() {
                 }
                 ImGui::EndDisabled();
                 ImGui::SameLine();
+                ImGui::BeginDisabled(!raw_pair_ready_to_save);
+                if (ImGui::Button("Save Raw Pair")) {
+                    try {
+                        const std::filesystem::path output_directory =
+                            saveRawStereoPair(captured_raw_left_frame, captured_raw_right_frame);
+                        image_display_status =
+                            "Saved raw stereo pair to " + output_directory.string();
+                    } catch (const std::exception &error) {
+                        image_display_status =
+                            "Raw stereo pair save failed: " + std::string(error.what());
+                    }
+                }
+                ImGui::EndDisabled();
                 ImGui::BeginDisabled(!show_final_capture_view || !displayed_final_capture ||
                                      displayed_final_capture->left.pixels.empty() || anylabeling_bridge.running());
                 if (ImGui::Button("Draw Manually") && show_final_capture_view &&
