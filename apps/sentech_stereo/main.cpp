@@ -566,24 +566,25 @@ int main() {
 
                 // Keep acquisition controls and calibration controls in separate blocks.
                 ImGui::Begin("Acquisition");
-                if (ImGui::Button("Start") && !capture.running()) {
-                    try {
-                        capture.start();
-                        show_final_capture_view = false;
-                        show_final_mask_editor = false;
-                        if (show_rectified_images && stereo_rectifier.hasCalibration() &&
-                            !ffs_pipeline.running()) {
-                            ffs_pipeline.start();
-                            image_display_status =
-                                "Camera acquisition and live FFS restarted";
+                if (ImGui::Button(capture.running() ? "Stop" : "Start")) {
+                    if (capture.running()) {
+                        capture.stop();
+                    } else {
+                        try {
+                            capture.start();
+                            show_final_capture_view = false;
+                            show_final_mask_editor = false;
+                            if (show_rectified_images && stereo_rectifier.hasCalibration() &&
+                                !ffs_pipeline.running()) {
+                                ffs_pipeline.start();
+                                image_display_status =
+                                    "Camera acquisition and live FFS restarted";
+                            }
+                        } catch (const std::exception &error) {
+                            std::cerr << "Start failed: " << error.what() << '\n';
                         }
-                    } catch (const std::exception &error) {
-                        std::cerr << "Start failed: " << error.what() << '\n';
                     }
                 }
-                ImGui::SameLine();
-                if (ImGui::Button("Stop") && capture.running())
-                    capture.stop();
                 ImGui::SameLine();
                 if (ImGui::Button("Quit"))
                     glfwSetWindowShouldClose(window, GLFW_TRUE);
