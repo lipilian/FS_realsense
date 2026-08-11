@@ -61,6 +61,7 @@ struct LiveCharucoDetector::Impl {
     cv::Ptr<cv::aruco::Dictionary> dictionary;
     cv::Ptr<cv::aruco::CharucoBoard> board;
     cv::Ptr<cv::aruco::DetectorParameters> parameters = cv::aruco::DetectorParameters::create();
+    cv::Ptr<cv::CLAHE> clahe = cv::createCLAHE(2.0, cv::Size(8, 8));
 
     Impl() {
         configure(config);
@@ -147,10 +148,13 @@ void LiveCharucoDetector::detect(const io::BgrFrame &frame, CharucoDetection &re
                     result.annotated_frame.pixels.data());
     cv::Mat gray;
     cv::cvtColor(overlay, gray, cv::COLOR_BGR2GRAY);
+    cv::Mat detection_gray;
+    impl_->clahe->apply(gray, detection_gray);
 
     std::vector<std::vector<cv::Point2f>> marker_corners;
     std::vector<int> marker_ids;
-    cv::aruco::detectMarkers(gray, impl_->dictionary, marker_corners, marker_ids, impl_->parameters);
+    cv::aruco::detectMarkers(detection_gray, impl_->dictionary, marker_corners, marker_ids,
+                             impl_->parameters);
     result.marker_count = static_cast<int>(marker_ids.size());
 
     if (!marker_ids.empty()) {
@@ -158,7 +162,7 @@ void LiveCharucoDetector::detect(const io::BgrFrame &frame, CharucoDetection &re
 
         cv::Mat charuco_corners;
         cv::Mat charuco_ids;
-        cv::aruco::interpolateCornersCharuco(marker_corners, marker_ids, gray, impl_->board,
+        cv::aruco::interpolateCornersCharuco(marker_corners, marker_ids, detection_gray, impl_->board,
                                               charuco_corners, charuco_ids);
         result.corner_count = charuco_ids.rows;
         result.corners.reserve(static_cast<std::size_t>(result.corner_count));

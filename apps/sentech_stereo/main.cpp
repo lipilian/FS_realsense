@@ -817,8 +817,11 @@ int main() {
                 ImGui::SameLine();
                 ImGui::BeginDisabled(!capture.running());
                 if (ImGui::Button(show_calibration_panel ? "End Calibration"
-                                                         : "Start Calibration"))
+                                                         : "Start Calibration")) {
                     show_calibration_panel = !show_calibration_panel;
+                    if (!show_calibration_panel)
+                        live_charuco_detection = false;
+                }
                 ImGui::EndDisabled();
                 ImGui::SameLine();
                 if (ImGui::Button("Quit"))
