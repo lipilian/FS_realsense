@@ -1,6 +1,9 @@
 #include "opengl_point_cloud_viewer.hpp"
 #include "ffs_viewer/geometry/final_cloud_processor.hpp"
 
+#include <vcg/complex/algorithms/stat.h>
+#include <vcg/complex/complex.h>
+
 #include <GL/glew.h>
 #include <cuda_gl_interop.h>
 #include <imgui.h>
@@ -10,6 +13,74 @@
 #include <stdexcept>
 
 namespace ffs_viewer::ui {
+namespace {
+
+class VcgAreaVertex;
+class VcgAreaFace;
+
+struct VcgAreaUsedTypes : public vcg::UsedTypes<
+    vcg::Use<VcgAreaVertex>::AsVertexType, vcg::Use<VcgAreaFace>::AsFaceType> {};
+
+class VcgAreaVertex final
+    : public vcg::Vertex<VcgAreaUsedTypes, vcg::vertex::Coord3f> {};
+
+class VcgAreaFace final
+    : public vcg::Face<VcgAreaUsedTypes, vcg::face::VertexRef, vcg::face::BitFlags> {};
+
+class VcgAreaMesh final
+    : public vcg::tri::TriMesh<std::vector<VcgAreaVertex>, std::vector<VcgAreaFace>> {};
+
+float computeVcgMeshArea(
+    const ffs_viewer::geometry::FinalCloudCpuMesh &cpu_mesh) {
+    if (cpu_mesh.width <= 1 || cpu_mesh.height <= 1 || cpu_mesh.display_step <= 0)
+        return 0.F;
+
+    const std::size_t vertex_count =
+        static_cast<std::size_t>(cpu_mesh.width) * cpu_mesh.height;
+    const int cells_x = (cpu_mesh.width - 1) / cpu_mesh.display_step;
+    const int cells_y = (cpu_mesh.height - 1) / cpu_mesh.display_step;
+    const int cell_count = cells_x * cells_y;
+    if (cpu_mesh.xyz.size() != vertex_count * 3U ||
+        cpu_mesh.cells_valid.size() != static_cast<std::size_t>(cell_count)) {
+        throw std::runtime_error("CPU final mesh has invalid dimensions");
+    }
+
+    VcgAreaMesh mesh;
+    auto vertex = vcg::tri::Allocator<VcgAreaMesh>::AddVertices(mesh, vertex_count);
+    for (std::size_t index = 0; index < vertex_count; ++index) {
+        vertex[index].P() = vcg::Point3f(cpu_mesh.xyz[3U * index],
+                                          cpu_mesh.xyz[3U * index + 1U],
+                                          cpu_mesh.xyz[3U * index + 2U]);
+    }
+
+    const std::size_t face_count = 2U * static_cast<std::size_t>(
+        std::count_if(cpu_mesh.cells_valid.begin(), cpu_mesh.cells_valid.end(),
+                      [](int valid) { return valid != 0; }));
+    auto face = vcg::tri::Allocator<VcgAreaMesh>::AddFaces(mesh, face_count);
+    for (int cell = 0; cell < cell_count; ++cell) {
+        if (cpu_mesh.cells_valid[cell] == 0)
+            continue;
+
+        const int x = (cell % cells_x) * cpu_mesh.display_step;
+        const int y = (cell / cells_x) * cpu_mesh.display_step;
+        const int a = y * cpu_mesh.width + x;
+        const int b = a + cpu_mesh.display_step;
+        const int c = a + cpu_mesh.display_step * cpu_mesh.width;
+        const int d = c + cpu_mesh.display_step;
+        face->V(0) = &mesh.vert[a];
+        face->V(1) = &mesh.vert[b];
+        face->V(2) = &mesh.vert[c];
+        ++face;
+        face->V(0) = &mesh.vert[b];
+        face->V(1) = &mesh.vert[d];
+        face->V(2) = &mesh.vert[c];
+        ++face;
+    }
+
+    return vcg::tri::Stat<VcgAreaMesh>::ComputeMeshArea(mesh);
+}
+
+} // namespace
 
 OpenGLPointCloudViewer::OpenGLPointCloudViewer() {
     glGenBuffers(1, &xyz_vbo_);
@@ -86,7 +157,11 @@ void OpenGLPointCloudViewer::updateCudaFinal(const ffs_viewer::geometry::FinalCl
         throw std::runtime_error("CUDA failed to finalize final-cloud OpenGL VBO");
     show_mesh_ = show_mesh && display_cloud.d_mask != nullptr;
     mesh_index_count_ = show_mesh_ ? ffs_viewer::geometry::finalCloudMeshIndexCount(display_cloud) : 0;
-    mesh_area_m2_ = show_mesh_ ? ffs_viewer::geometry::prepareFinalCloudMesh(display_cloud, 0) : 0.F;
+    mesh_area_m2_ = 0.F;
+    if (show_mesh_) {
+        const auto cpu_mesh = ffs_viewer::geometry::prepareFinalCloudMeshForCpu(display_cloud, 0);
+        mesh_area_m2_ = computeVcgMeshArea(cpu_mesh);
+    }
     show_mesh_ = show_mesh_ && mesh_area_m2_ > 0.F;
     if (show_mesh_ && mesh_index_count_ > 0) {
         if (cuda_index_resource_ != nullptr) { cudaGraphicsUnregisterResource(static_cast<cudaGraphicsResource*>(cuda_index_resource_)); cuda_index_resource_ = nullptr; }

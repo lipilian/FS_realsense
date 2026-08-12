@@ -35,7 +35,6 @@ struct RenderFrame {
     int final_gpu_left_plane_stride = 0;
     int final_gpu_point_count = 0;
     int* final_gpu_mesh_parent = nullptr;
-    float* final_gpu_mesh_total_area = nullptr;
     std::vector<float> xyz;
     std::vector<std::uint8_t> rgb;
 };

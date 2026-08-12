@@ -192,7 +192,6 @@ int main(int argc, char **argv) {
                 gpu_cloud.left_plane_stride = displayed_frame->final_gpu_left_plane_stride;
                 gpu_cloud.point_count = displayed_frame->final_gpu_point_count;
                 gpu_cloud.d_mesh_parent = displayed_frame->final_gpu_mesh_parent;
-                gpu_cloud.d_mesh_total_area = displayed_frame->final_gpu_mesh_total_area;
                 gpu_cloud.disparity.width = displayed_frame->final_disparity_width;
                 gpu_cloud.disparity.height = displayed_frame->final_disparity_height;
                 gpu_cloud.display_step = mask_step;
@@ -247,7 +246,6 @@ int main(int argc, char **argv) {
                     gpu_cloud.left_plane_stride = latest->final_gpu_left_plane_stride;
                      gpu_cloud.point_count = latest->final_gpu_point_count;
                     gpu_cloud.d_mesh_parent = latest->final_gpu_mesh_parent;
-                    gpu_cloud.d_mesh_total_area = latest->final_gpu_mesh_total_area;
                      gpu_cloud.disparity.width = latest->final_disparity_width;
                     gpu_cloud.disparity.height = latest->final_disparity_height;
                     viewer.updateCudaFinal(gpu_cloud);

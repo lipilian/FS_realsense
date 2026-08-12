@@ -13,6 +13,14 @@
 
 namespace ffs_viewer::geometry {
 
+struct FinalCloudCpuMesh {
+    int width = 0;
+    int height = 0;
+    int display_step = 1;
+    std::vector<float> xyz;
+    std::vector<int> cells_valid;
+};
+
 struct FinalCloudFrame {
     inference::DisparityFrame disparity;
     const float* d_xyz = nullptr;
@@ -27,7 +35,6 @@ struct FinalCloudFrame {
     int mask_width = 0;
     int mask_height = 0;
     int* d_mesh_parent = nullptr;
-    float* d_mesh_total_area = nullptr;
 };
 
 void writeFinalCloudVertices(const FinalCloudFrame& cloud, GpuPointVertex* d_vertices,
@@ -35,9 +42,10 @@ void writeFinalCloudVertices(const FinalCloudFrame& cloud, GpuPointVertex* d_ver
 int finalCloudMeshIndexCount(const FinalCloudFrame& cloud);
 void writeFinalCloudMeshIndices(const FinalCloudFrame& cloud, std::uint32_t* d_indices,
                                 cudaStream_t stream);
-// Marks every mask-selected, depth-continuous grid cell for mesh rendering.
+// Marks every mask-selected, depth-continuous grid cell, then copies the
+// source XYZ data and cell-validity flags for CPU mesh processing.
 // Call this before writeFinalCloudMeshIndices().
-float prepareFinalCloudMesh(const FinalCloudFrame& cloud, cudaStream_t stream);
+FinalCloudCpuMesh prepareFinalCloudMeshForCpu(const FinalCloudFrame& cloud, cudaStream_t stream);
 
 // Owns reusable GPU buffers for final-capture geometry. The TensorRT disparity
 // buffer remains on GPU until invisible filtering, projection, and denoising

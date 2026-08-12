@@ -150,28 +150,6 @@ __global__ void initializeMeshKernel(const float* xyz, const std::uint8_t* valid
                                     fminf(fminf(za, zb), fminf(zc, zd)) <= depth_threshold_m;
 }
 
-__device__ float triangleArea(const float* xyz, int a, int b, int c) {
-    const float abx = xyz[3 * b] - xyz[3 * a];
-    const float aby = xyz[3 * b + 1] - xyz[3 * a + 1];
-    const float abz = xyz[3 * b + 2] - xyz[3 * a + 2];
-    const float acx = xyz[3 * c] - xyz[3 * a];
-    const float acy = xyz[3 * c + 1] - xyz[3 * a + 1];
-    const float acz = xyz[3 * c + 2] - xyz[3 * a + 2];
-    const float cross_x = aby * acz - abz * acy;
-    const float cross_y = abz * acx - abx * acz;
-    const float cross_z = abx * acy - aby * acx;
-    return 0.5F * sqrtf(cross_x * cross_x + cross_y * cross_y + cross_z * cross_z);
-}
-
-__global__ void sumMeshAreaKernel(const float* xyz, const int* cells_valid, int w, int step,
-                                  int cells_x, int cells, float* total_area) {
-    const int cell = blockIdx.x * blockDim.x + threadIdx.x;
-    if (cell >= cells || cells_valid[cell] == 0) return;
-    const int x = (cell % cells_x) * step, y = (cell / cells_x) * step;
-    const int a = y * w + x, b = a + step, c = a + step * w, d = c + step;
-    atomicAdd(total_area, triangleArea(xyz, a, b, c) + triangleArea(xyz, b, d, c));
-}
-
 __global__ void writeMeshIndicesKernel(const int* cells_valid, int w, int step,
                                        std::uint32_t* indices, int cells_x, int cells) {
     const int cell = blockIdx.x * blockDim.x + threadIdx.x;
@@ -203,7 +181,6 @@ struct FinalCloudProcessor::Impl {
     std::size_t select_bytes = 0, sort_bytes = 0;
     int* d_active_count = nullptr;
     int* d_mesh_parent = nullptr;
-    float* d_mesh_total_area = nullptr;
 
     Impl(int w, int h) : width(w), height(h), count(w * h) {
         check(cudaMalloc(&d_xyz, 3ULL * count * sizeof(float)), "allocate final XYZ");
@@ -217,15 +194,13 @@ struct FinalCloudProcessor::Impl {
         check(cudaMalloc(&d_active_count, sizeof(int)), "allocate active count");
         check(cudaMalloc(&d_mesh_parent, (width - 1) * (height - 1) * sizeof(int)),
                        "allocate final mesh cells");
-        check(cudaMalloc(&d_mesh_total_area, sizeof(float)),
-                       "allocate final mesh total area");
         check(cub::DeviceSelect::Flagged(nullptr, select_bytes, d_indices, d_valid, d_active, d_active_count, count), "query CUB select");
         check(cudaMalloc(&d_select_temp, select_bytes), "allocate CUB select workspace");
         check(cub::DeviceRadixSort::SortPairs(nullptr, sort_bytes, d_keys_in, d_keys_out, d_ids_in, d_ids_out, count), "query CUB sort");
         check(cudaMalloc(&d_sort_temp, sort_bytes), "allocate CUB sort workspace");
     }
     ~Impl() {
-        cudaFree(d_sort_temp); cudaFree(d_select_temp); cudaFree(d_mesh_total_area); cudaFree(d_mesh_parent);
+        cudaFree(d_sort_temp); cudaFree(d_select_temp); cudaFree(d_mesh_parent);
         cudaFree(d_active_count); cudaFree(d_keys_out); cudaFree(d_keys_in);
         cudaFree(d_ids_out); cudaFree(d_ids_in); cudaFree(d_active); cudaFree(d_indices); cudaFree(d_valid); cudaFree(d_xyz);
     }
@@ -276,7 +251,6 @@ FinalCloudFrame FinalCloudProcessor::process(float* d_disparity, const float* d_
     result.left_plane_stride = left_plane_stride;
     result.point_count = impl_->count;
     result.d_mesh_parent = impl_->d_mesh_parent;
-    result.d_mesh_total_area = impl_->d_mesh_total_area;
     return result;
 }
 
@@ -311,12 +285,14 @@ void writeFinalCloudMeshIndices(const FinalCloudFrame& cloud, std::uint32_t* d_i
 }
 
 
-float prepareFinalCloudMesh(const FinalCloudFrame& cloud, cudaStream_t stream) {
+FinalCloudCpuMesh prepareFinalCloudMeshForCpu(const FinalCloudFrame& cloud, cudaStream_t stream) {
+    FinalCloudCpuMesh result;
     const int count = finalCloudMeshIndexCount(cloud);
     if (count <= 0 || !cloud.d_xyz || !cloud.d_valid || !cloud.d_mask ||
-        !cloud.d_mesh_parent || !cloud.d_mesh_total_area) {
-        return 0.F;
+        !cloud.d_mesh_parent) {
+        return result;
     }
+
     const int cells_x = (cloud.disparity.width - 1) / cloud.display_step;
     const int cells = count / 6;
     const int blocks = (cells + 255) / 256;
@@ -325,17 +301,19 @@ float prepareFinalCloudMesh(const FinalCloudFrame& cloud, cudaStream_t stream) {
         cloud.disparity.width, cloud.disparity.height, cloud.display_step,
         cloud.mesh_depth_threshold_m, cloud.d_mesh_parent, cells_x, cells);
     check(cudaGetLastError(), "initialize final-cloud mesh");
-    check(cudaMemsetAsync(cloud.d_mesh_total_area, 0, sizeof(float), stream),
-          "clear final mesh total area");
-    sumMeshAreaKernel<<<blocks, 256, 0, stream>>>(
-        cloud.d_xyz, cloud.d_mesh_parent, cloud.disparity.width, cloud.display_step,
-        cells_x, cells, cloud.d_mesh_total_area);
-    check(cudaGetLastError(), "sum final-cloud mesh area");
-    float total_area_m2 = 0.F;
-    check(cudaMemcpyAsync(&total_area_m2, cloud.d_mesh_total_area, sizeof(float),
-                          cudaMemcpyDeviceToHost, stream),
-          "copy final mesh total area");
-    check(cudaStreamSynchronize(stream), "synchronize final mesh area");
-    return total_area_m2;
+
+    result.width = cloud.disparity.width;
+    result.height = cloud.disparity.height;
+    result.display_step = cloud.display_step;
+    result.xyz.resize(static_cast<std::size_t>(result.width) * result.height * 3U);
+    result.cells_valid.resize(cells);
+    check(cudaMemcpyAsync(result.xyz.data(), cloud.d_xyz,
+                          result.xyz.size() * sizeof(float), cudaMemcpyDeviceToHost, stream),
+          "copy final mesh XYZ to CPU");
+    check(cudaMemcpyAsync(result.cells_valid.data(), cloud.d_mesh_parent,
+                          result.cells_valid.size() * sizeof(int), cudaMemcpyDeviceToHost, stream),
+          "copy final mesh cells to CPU");
+    check(cudaStreamSynchronize(stream), "synchronize final CPU mesh");
+    return result;
 }
 }  // namespace ffs_viewer::geometry

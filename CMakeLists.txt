@@ -154,6 +154,8 @@ if(FFS_VIEWER_BUILD_SENTECH_DUAL_CONNECT)
     "${FFS_SENTECH_STAPI_INCLUDE_DIR}"
     "${FFS_SENTECH_GENICAM_INCLUDE_DIR}"
     "${CMAKE_CURRENT_SOURCE_DIR}/apps/live_viewer"
+    "${CMAKE_CURRENT_SOURCE_DIR}/third_party/vcglib"
+    "${CMAKE_CURRENT_SOURCE_DIR}/third_party/vcglib/eigenlib"
   )
   target_link_libraries(sentech_stereo PRIVATE
     "${FFS_SENTECH_TL_LIBRARY}"
@@ -261,6 +263,10 @@ if(FFS_VIEWER_BUILD_OFFLINE_VALIDATE)
     apps/live_viewer/main.cpp
     apps/live_viewer/live_pipeline.cpp
     apps/live_viewer/opengl_point_cloud_viewer.cpp
+  )
+  target_include_directories(live_viewer PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/third_party/vcglib"
+    "${CMAKE_CURRENT_SOURCE_DIR}/third_party/vcglib/eigenlib"
   )
   target_link_libraries(live_viewer PRIVATE ffs_viewer::offline ffs_viewer_imgui glfw GLEW OpenGL::GL)
   target_compile_definitions(live_viewer PRIVATE
