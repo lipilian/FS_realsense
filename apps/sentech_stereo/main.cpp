@@ -995,16 +995,18 @@ int main() {
                             const auto rectified_camera =
                                 stereo_rectifier.rectifiedCamera(display_left->width, display_left->height);
                             active_rectified_camera = rectified_camera;
-                            ffs_pipeline.setCameraModel({
-                                rectified_camera.width,
-                                rectified_camera.height,
-                                static_cast<float>(rectified_camera.fx),
-                                static_cast<float>(rectified_camera.fy),
-                                static_cast<float>(rectified_camera.cx),
-                                static_cast<float>(rectified_camera.cy),
-                                static_cast<float>(rectified_camera.baseline_m),
-                            });
-                            ffs_pipeline.submit(*display_left, *display_right);
+                            if (ffs_pipeline.running()) {
+                                ffs_pipeline.setCameraModel({
+                                    rectified_camera.width,
+                                    rectified_camera.height,
+                                    static_cast<float>(rectified_camera.fx),
+                                    static_cast<float>(rectified_camera.fy),
+                                    static_cast<float>(rectified_camera.cx),
+                                    static_cast<float>(rectified_camera.cy),
+                                    static_cast<float>(rectified_camera.baseline_m),
+                                });
+                                ffs_pipeline.submit(*display_left, *display_right);
+                            }
                         } catch (const std::exception &error) {
                             show_rectified_images = false;
                             ffs_pipeline.stop();
@@ -1023,6 +1025,7 @@ int main() {
                     }
                 } catch (const std::exception &error) {
                     capture.stop();
+                    ffs_pipeline.stop();
                     std::cerr << "Streaming error: " << error.what() << '\n';
                 }
 
@@ -1037,17 +1040,13 @@ int main() {
                 if (ImGui::Button(capture.running() ? "Stop" : "Start")) {
                     if (capture.running()) {
                         capture.stop();
+                        ffs_pipeline.stop();
                     } else {
                         try {
                             capture.start();
                             show_final_capture_view = false;
                             show_final_mask_editor = false;
-                            if (show_rectified_images && stereo_rectifier.hasCalibration() &&
-                                !ffs_pipeline.running()) {
-                                ffs_pipeline.start();
-                                image_display_status =
-                                    "Camera acquisition and live FFS restarted";
-                            }
+                            image_display_status = "Camera acquisition restarted";
                         } catch (const std::exception &error) {
                             std::cerr << "Start failed: " << error.what() << '\n';
                         }
@@ -1076,11 +1075,22 @@ int main() {
                         image_display_status =
                             "Rectified images require a saved or completed stereo calibration";
                     } else {
+                        show_rectified_images = true;
+                        image_display_status =
+                            "Showing stereo-rectified images; FFS is disabled";
+                    }
+                }
+                ImGui::EndDisabled();
+                ImGui::SameLine();
+                ImGui::BeginDisabled(!capture.running() || !show_rectified_images);
+                if (ImGui::Button(ffs_pipeline.running() ? "Disable FFS" : "Enable FFS")) {
+                    if (ffs_pipeline.running()) {
+                        ffs_pipeline.stop();
+                        image_display_status = "Live FFS disabled; showing rectified images";
+                    } else {
                         try {
                             ffs_pipeline.start();
-                            show_rectified_images = true;
-                            image_display_status =
-                                "Showing stereo-rectified images; starting live FFS disparity";
+                            image_display_status = "Live FFS enabled for rectified images";
                         } catch (const std::exception &error) {
                             image_display_status = "Cannot start Sentech FFS: " +
                                                    std::string(error.what());
@@ -1089,20 +1099,22 @@ int main() {
                 }
                 ImGui::EndDisabled();
                 ImGui::TextWrapped("%s", image_display_status.c_str());
-                ImGui::BeginDisabled(!show_rectified_images);
+                // A final capture always starts from the frozen raw pair. This keeps
+                // raw and rectified preview modes equivalent: the raw pair is
+                // rectified here, then the final-capture pipeline applies its shared
+                // crop and 608 x 512 preprocessing before FoundationStereo runs.
+                ImGui::BeginDisabled(!capture.running() || !stereo_rectifier.hasCalibration() ||
+                                     final_capture_pipeline.running());
                 if (ImGui::Button("Capture")) {
                     if (show_final_mask_editor) {
                         image_display_status =
                             "Close the Draw window before taking another final capture";
-                    } else if (!show_rectified_images || !rectified_left_frame.valid() ||
-                        !rectified_right_frame.valid() || !active_rectified_camera.has_value()) {
-                        image_display_status =
-                            "Enable rectified stereo and wait for a valid frame before Capture";
                     } else {
                         try {
-                            startFinalCapture(capture.leftFrame(), capture.rightFrame(),
-                                              rectified_left_frame, rectified_right_frame,
-                                              *active_rectified_camera, "the live camera pair");
+                            const auto raw_left = capture.leftFrame();
+                            const auto raw_right = capture.rightFrame();
+                            startFinalCaptureFromRawPair(raw_left, raw_right,
+                                                         "the live camera pair");
                         } catch (const std::exception &error) {
                             image_display_status = "Final capture error: " +
                                                    std::string(error.what());
@@ -1418,7 +1430,7 @@ int main() {
                     show_final_capture_view && displayed_final_capture != nullptr;
                 drawStereoView(showing_final_capture ? final_left_texture : left_texture,
                                showing_final_capture ? final_right_texture : right_texture);
-                if (show_rectified_images && !showing_final_capture) {
+                if (show_rectified_images && ffs_pipeline.running() && !showing_final_capture) {
                     const auto disparity = ffs_pipeline.latestResult();
                     if (disparity &&
                         (disparity->left_frame_id != uploaded_disparity_left_frame_id ||
@@ -1431,7 +1443,7 @@ int main() {
                     }
                     drawLivePointCloud(point_cloud_viewer, ffs_pipeline.status());
                 }
-                if (show_rectified_images || showing_final_capture) {
+                if ((show_rectified_images && ffs_pipeline.running()) || showing_final_capture) {
                     drawLiveDisparity(disparity_texture,
                                       showing_final_capture ? "FoundationStereo final disparity"
                                                             : ffs_pipeline.status());
