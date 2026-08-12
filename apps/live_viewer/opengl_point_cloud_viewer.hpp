@@ -2,6 +2,8 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
+#include <memory>
 #include <vector>
 
 namespace ffs_viewer::geometry { struct FinalCloudFrame; }
@@ -11,6 +13,11 @@ struct ImDrawList;
 struct ImVec2;
 
 namespace ffs_viewer::ui {
+
+struct MeshComponentArea {
+    int triangle_count = 0;
+    float area_m2 = 0.F;
+};
 
 class OpenGLPointCloudViewer {
   public:
@@ -31,6 +38,11 @@ class OpenGLPointCloudViewer {
     void interact(bool hovered, bool orbiting, bool panning, float delta_x, float delta_y, float wheel);
     int pointCount() const { return point_count_; }
     float meshAreaM2() const noexcept { return mesh_area_m2_; }
+    const std::vector<MeshComponentArea> &meshComponentAreas() const noexcept {
+        return mesh_component_areas_;
+    }
+    bool hasVcgMesh() const noexcept;
+    void saveVcgMeshObj(const std::filesystem::path &path) const;
 
   private:
     struct Camera {
@@ -67,6 +79,9 @@ class OpenGLPointCloudViewer {
     bool show_mesh_ = false;
     int mesh_index_count_ = 0;
     float mesh_area_m2_ = 0.F;
+    std::vector<MeshComponentArea> mesh_component_areas_;
+    struct VcgMeshStorage;
+    std::unique_ptr<VcgMeshStorage> vcg_mesh_;
     int point_count_ = 0;
     float max_depth_m_ = 10.F;
     static constexpr float kCloudDepthOffsetM = 2.F;

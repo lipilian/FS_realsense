@@ -542,7 +542,6 @@ void drawLivePointCloud(ffs_viewer::ui::SentechPointCloudViewer &viewer,
 
 void drawFinalPointCloud(ffs_viewer::ui::OpenGLPointCloudViewer &viewer) {
     ImGui::Begin("Live Point Cloud");
-    ImGui::Text("Current triangle area: %.1f cm^2", viewer.meshAreaM2() * 10000.F);
     ImGui::Text("FoundationStereo final: %d GPU vertices", viewer.pointCount());
     const ImVec2 available = ImGui::GetContentRegionAvail();
     const ImVec2 canvas_size(std::max(1.0F, available.x), std::max(1.0F, available.y));
@@ -556,6 +555,46 @@ void drawFinalPointCloud(ffs_viewer::ui::OpenGLPointCloudViewer &viewer) {
                     hovered ? io.MouseWheel : 0.0F);
     viewer.draw(ImGui::GetWindowDrawList(), canvas_origin, canvas_size, io.DisplayFramebufferScale.x,
                 io.DisplayFramebufferScale.y, io.DisplaySize.y * io.DisplayFramebufferScale.y);
+    ImGui::End();
+}
+
+void drawFinalMeshAreas(const ffs_viewer::ui::OpenGLPointCloudViewer &viewer) {
+    constexpr float kMinimumComponentAreaCm2 = 10.F;
+    const auto &components = viewer.meshComponentAreas();
+    float retained_total_cm2 = 0.F;
+    std::size_t retained_count = 0;
+    for (const auto &component : components) {
+        const float area_cm2 = component.area_m2 * 10000.F;
+        if (area_cm2 > kMinimumComponentAreaCm2) {
+            retained_total_cm2 += area_cm2;
+            ++retained_count;
+        }
+    }
+
+    ImGui::SetNextWindowSize(ImVec2(520.F, 0.F), ImGuiCond_FirstUseEver);
+    ImGui::Begin("Mesh Areas");
+    ImGui::Text("Retained total (> %.0f cm^2)", kMinimumComponentAreaCm2);
+    ImGui::SetWindowFontScale(4.F);
+    ImGui::Text("%.1f cm^2", retained_total_cm2);
+    ImGui::SetWindowFontScale(1.F);
+    ImGui::Text("Components above threshold: %zu", retained_count);
+    ImGui::Separator();
+    if (retained_count == 0U) {
+        ImGui::TextUnformatted("Draw or import a mask with an area above 10 cm^2.");
+    } else {
+        std::size_t displayed_index = 0;
+        for (const auto &component : components) {
+            const float area_cm2 = component.area_m2 * 10000.F;
+            if (area_cm2 <= kMinimumComponentAreaCm2)
+                continue;
+            ++displayed_index;
+            ImGui::Text("Component %zu", displayed_index);
+            ImGui::SetWindowFontScale(4.F);
+            ImGui::Text("%.1f cm^2", area_cm2);
+            ImGui::SetWindowFontScale(1.F);
+            ImGui::Text("%d triangles", component.triangle_count);
+        }
+    }
     ImGui::End();
 }
 
@@ -799,6 +838,7 @@ int main() {
             int final_mask_brush_radius = 4;
             bool final_mask_stroke_active = false;
             float final_mesh_depth_threshold_cm = 1.0F;
+            int final_mesh_downsample = 4;
             cv::Point previous_final_mask_pixel;
             std::uint64_t uploaded_disparity_left_frame_id = 0;
             std::uint64_t uploaded_disparity_right_frame_id = 0;
@@ -864,7 +904,7 @@ int main() {
                                   rectified_camera, source);
             };
 
-            auto refreshFinalMask = [&] {
+            auto refreshFinalMask = [&](bool rebuild_mesh = true) {
                 if (!displayed_final_capture || final_mask_source.empty() || final_mask.empty())
                     return;
                 cv::Mat overlay = final_mask_source.clone();
@@ -874,11 +914,15 @@ int main() {
                 cv::addWeighted(final_mask_source, 0.8, overlay, 0.2, 0.0, blended);
                 final_mask_texture.upload(blended);
 
-                auto cloud = displayed_final_capture->cloud;
-                cloud.display_step = 1; // Draw is intentionally full 608 x 512 resolution.
-                cloud.mesh_depth_threshold_m = 0.01F * final_mesh_depth_threshold_cm;
-                final_point_cloud_viewer.updateCudaFinal(cloud, final_mask.data, final_mask.cols,
-                                                         final_mask.rows, true);
+                if (rebuild_mesh) {
+                    auto cloud = displayed_final_capture->cloud;
+                    // Preserve every mask-highlighted point; only the mesh grid is reduced.
+                    cloud.display_step = 1;
+                    cloud.mesh_step = final_mesh_downsample;
+                    cloud.mesh_depth_threshold_m = 0.01F * final_mesh_depth_threshold_cm;
+                    final_point_cloud_viewer.updateCudaFinal(cloud, final_mask.data, final_mask.cols,
+                                                             final_mask.rows, true);
+                }
             };
 
             while (!glfwWindowShouldClose(window)) {
@@ -1125,17 +1169,30 @@ int main() {
                 ImGui::SameLine();
                 ImGui::BeginDisabled(!raw_pair_ready_to_save ||
                                      !captured_foundation_stereo_left_frame.valid());
-                if (ImGui::Button("Save Raw Pair")) {
+                if (ImGui::Button("Save Pair")) {
                     try {
                         const std::filesystem::path output_directory =
                             saveRawStereoPair(captured_raw_left_frame, captured_raw_right_frame,
                                               captured_foundation_stereo_left_frame);
-                        image_display_status =
-                            "Saved raw stereo pair and AnnotateMe.png to " +
-                            output_directory.string();
+                        if (final_point_cloud_viewer.hasVcgMesh()) {
+                            try {
+                                final_point_cloud_viewer.saveVcgMeshObj(output_directory / "mesh.obj");
+                                image_display_status =
+                                    "Saved pair, AnnotateMe.png, and mesh.obj to " +
+                                    output_directory.string();
+                            } catch (const std::exception &error) {
+                                image_display_status =
+                                    "Saved pair and AnnotateMe.png to " + output_directory.string() +
+                                    "; mesh.obj export failed: " + error.what();
+                            }
+                        } else {
+                            image_display_status =
+                                "Saved pair and AnnotateMe.png to " + output_directory.string() +
+                                "; no VCG mesh was generated";
+                        }
                     } catch (const std::exception &error) {
                         image_display_status =
-                            "Raw stereo pair save failed: " + std::string(error.what());
+                            "Pair save failed: " + std::string(error.what());
                     }
                 }
                 ImGui::EndDisabled();
@@ -1448,11 +1505,13 @@ int main() {
                                       showing_final_capture ? "FoundationStereo final disparity"
                                                             : ffs_pipeline.status());
                 }
-                if (showing_final_capture)
+                if (showing_final_capture) {
                     drawFinalPointCloud(final_point_cloud_viewer);
+                    drawFinalMeshAreas(final_point_cloud_viewer);
+                }
                 if (show_final_mask_editor) {
                     ImGui::Begin("Final Surface Draw", &show_final_mask_editor);
-                    ImGui::TextUnformatted("Frozen 608 x 512 image; Draw uses every disparity pixel.");
+                    ImGui::TextUnformatted("Highlighted points use the original resolution; mesh uses its own grid.");
                     ImGui::SameLine();
                     if (ImGui::Button("Clear mask")) {
                         final_mask.setTo(0);
@@ -1461,6 +1520,12 @@ int main() {
                     ImGui::SameLine();
                     ImGui::SetNextItemWidth(180.0F);
                     ImGui::SliderInt("Brush radius", &final_mask_brush_radius, 1, 20, "%d px");
+                    ImGui::SetNextItemWidth(180.0F);
+                    if (ImGui::SliderInt("Mesh downsample", &final_mesh_downsample, 1, 16,
+                                         "%dx")) {
+                        refreshFinalMask();
+                    }
+                    ImGui::TextDisabled("The mesh follows a simplified mask contour; its interior is sampled at this rate.");
                     if (ImGui::SliderFloat("Mesh depth threshold", &final_mesh_depth_threshold_cm, 0.1F,
                                            10.0F, "%.1f cm")) {
                         refreshFinalMask();
@@ -1499,9 +1564,13 @@ int main() {
                             }
                             previous_final_mask_pixel = pixel;
                             final_mask_stroke_active = true;
-                            refreshFinalMask();
-                        } else {
+                            // Keep the mask preview responsive while deferring CUDA/VCG work.
+                            refreshFinalMask(false);
+                        } else if (final_mask_stroke_active &&
+                                   !ImGui::IsMouseDown(ImGuiMouseButton_Left) &&
+                                   !ImGui::IsMouseDown(ImGuiMouseButton_Right)) {
                             final_mask_stroke_active = false;
+                            refreshFinalMask();
                         }
                     }
                     ImGui::End();

@@ -195,6 +195,7 @@ int main(int argc, char **argv) {
                 gpu_cloud.disparity.width = displayed_frame->final_disparity_width;
                 gpu_cloud.disparity.height = displayed_frame->final_disparity_height;
                 gpu_cloud.display_step = mask_step;
+                gpu_cloud.mesh_step = mask_step;
                 gpu_cloud.mesh_depth_threshold_m = .01F * mesh_depth_threshold_cm;
                 viewer.updateCudaFinal(gpu_cloud, mask.data, mask.cols, mask.rows, true);
             }

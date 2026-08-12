@@ -124,10 +124,25 @@ __global__ void writeVerticesKernel(const float* xyz, const std::uint8_t* valid,
 }
 
 
-__device__ bool meshMasked(const std::uint8_t* mask, int mask_width, int mask_height,
-                           int x, int y, int image_width, int image_height) {
-    return mask != nullptr && mask[min(mask_height - 1, y * mask_height / image_height) * mask_width +
-                                   min(mask_width - 1, x * mask_width / image_width)] != 0;
+// Select a mesh cell whenever it intersects the drawn mask. Requiring every
+// sampled corner to be inside the mask erodes its boundary as mesh_step grows.
+// Intersection testing may expand the mesh to a surrounding grid cell, but it
+// never pulls the mesh boundary inward from the user's mask.
+__device__ bool meshCellIntersectsMask(const std::uint8_t* mask, int mask_width,
+                                       int mask_height, int x, int y, int step,
+                                       int image_width, int image_height) {
+    if (mask == nullptr || mask_width <= 0 || mask_height <= 0) return false;
+    const int x_end = min(image_width - 1, x + step);
+    const int y_end = min(image_height - 1, y + step);
+    const int mx_begin = x * mask_width / image_width;
+    const int my_begin = y * mask_height / image_height;
+    // Include every mask pixel whose source-image bin intersects this cell.
+    const int mx_end = min(mask_width - 1, ((x_end + 1) * mask_width - 1) / image_width);
+    const int my_end = min(mask_height - 1, ((y_end + 1) * mask_height - 1) / image_height);
+    for (int my = my_begin; my <= my_end; ++my)
+        for (int mx = mx_begin; mx <= mx_end; ++mx)
+            if (mask[my * mask_width + mx] != 0) return true;
+    return false;
 }
 
 __global__ void initializeMeshKernel(const float* xyz, const std::uint8_t* valid,
@@ -139,10 +154,7 @@ __global__ void initializeMeshKernel(const float* xyz, const std::uint8_t* valid
     const int x = (cell % cells_x) * step;
     const int y = (cell / cells_x) * step;
     const int a = y * w + x, b = a + step, c = a + step * w, d = c + step;
-    const bool selected = meshMasked(mask, mw, mh, x, y, w, h) &&
-                          meshMasked(mask, mw, mh, x + step, y, w, h) &&
-                          meshMasked(mask, mw, mh, x, y + step, w, h) &&
-                          meshMasked(mask, mw, mh, x + step, y + step, w, h);
+    const bool selected = meshCellIntersectsMask(mask, mw, mh, x, y, step, w, h);
     const float za = xyz[3 * a + 2], zb = xyz[3 * b + 2];
     const float zc = xyz[3 * c + 2], zd = xyz[3 * d + 2];
     cells_valid[cell] = selected && valid[a] && valid[b] && valid[c] && valid[d] &&
@@ -268,51 +280,40 @@ void writeFinalCloudVertices(const FinalCloudFrame& cloud, GpuPointVertex* d_ver
 }
 
 int finalCloudMeshIndexCount(const FinalCloudFrame& cloud) {
-    if (cloud.display_step <= 0 || cloud.disparity.width <= 0 || cloud.disparity.height <= 0) return 0;
-    return 6 * ((cloud.disparity.width - 1) / cloud.display_step) *
-               ((cloud.disparity.height - 1) / cloud.display_step);
+    if (cloud.mesh_step <= 0 || cloud.disparity.width <= 0 || cloud.disparity.height <= 0) return 0;
+    return 6 * ((cloud.disparity.width - 1) / cloud.mesh_step) *
+               ((cloud.disparity.height - 1) / cloud.mesh_step);
 }
 
 void writeFinalCloudMeshIndices(const FinalCloudFrame& cloud, std::uint32_t* d_indices,
                                 cudaStream_t stream) {
     const int count = finalCloudMeshIndexCount(cloud);
     if (count <= 0 || d_indices == nullptr || cloud.d_mesh_parent == nullptr) return;
-    const int cells_x = (cloud.disparity.width - 1) / cloud.display_step;
+    const int cells_x = (cloud.disparity.width - 1) / cloud.mesh_step;
     const int cells = count / 6;
     writeMeshIndicesKernel<<<(cells + 255) / 256, 256, 0, stream>>>(
-        cloud.d_mesh_parent, cloud.disparity.width, cloud.display_step, d_indices, cells_x, cells);
+        cloud.d_mesh_parent, cloud.disparity.width, cloud.mesh_step, d_indices, cells_x, cells);
     check(cudaGetLastError(), "launch final-cloud mesh index write");
 }
 
 
 FinalCloudCpuMesh prepareFinalCloudMeshForCpu(const FinalCloudFrame& cloud, cudaStream_t stream) {
     FinalCloudCpuMesh result;
-    const int count = finalCloudMeshIndexCount(cloud);
-    if (count <= 0 || !cloud.d_xyz || !cloud.d_valid || !cloud.d_mask ||
-        !cloud.d_mesh_parent) {
+    if (!cloud.d_xyz || !cloud.d_valid || cloud.disparity.width <= 0 ||
+        cloud.disparity.height <= 0) {
         return result;
     }
 
-    const int cells_x = (cloud.disparity.width - 1) / cloud.display_step;
-    const int cells = count / 6;
-    const int blocks = (cells + 255) / 256;
-    initializeMeshKernel<<<blocks, 256, 0, stream>>>(
-        cloud.d_xyz, cloud.d_valid, cloud.d_mask, cloud.mask_width, cloud.mask_height,
-        cloud.disparity.width, cloud.disparity.height, cloud.display_step,
-        cloud.mesh_depth_threshold_m, cloud.d_mesh_parent, cells_x, cells);
-    check(cudaGetLastError(), "initialize final-cloud mesh");
 
     result.width = cloud.disparity.width;
     result.height = cloud.disparity.height;
-    result.display_step = cloud.display_step;
     result.xyz.resize(static_cast<std::size_t>(result.width) * result.height * 3U);
-    result.cells_valid.resize(cells);
+    result.valid.resize(static_cast<std::size_t>(result.width) * result.height);
     check(cudaMemcpyAsync(result.xyz.data(), cloud.d_xyz,
                           result.xyz.size() * sizeof(float), cudaMemcpyDeviceToHost, stream),
           "copy final mesh XYZ to CPU");
-    check(cudaMemcpyAsync(result.cells_valid.data(), cloud.d_mesh_parent,
-                          result.cells_valid.size() * sizeof(int), cudaMemcpyDeviceToHost, stream),
-          "copy final mesh cells to CPU");
+    check(cudaMemcpyAsync(result.valid.data(), cloud.d_valid, result.valid.size(), cudaMemcpyDeviceToHost,
+                          stream), "copy final mesh validity to CPU");
     check(cudaStreamSynchronize(stream), "synchronize final CPU mesh");
     return result;
 }

@@ -16,9 +16,8 @@ namespace ffs_viewer::geometry {
 struct FinalCloudCpuMesh {
     int width = 0;
     int height = 0;
-    int display_step = 1;
+    std::vector<std::uint8_t> valid;
     std::vector<float> xyz;
-    std::vector<int> cells_valid;
 };
 
 struct FinalCloudFrame {
@@ -29,7 +28,13 @@ struct FinalCloudFrame {
     int left_row_offset = 0;
     int left_plane_stride = 0;
     int point_count = 0;
+    // Controls only the rendered point-cloud density. Keep this at one while
+    // drawing so every mask-highlighted point remains visible.
     int display_step = 1;
+    // Controls only the mesh grid density. It is deliberately independent
+    // from display_step so the mesh can be simplified without decimating the
+    // highlighted points.
+    int mesh_step = 1;
     float mesh_depth_threshold_m = .01F;
     const std::uint8_t* d_mask = nullptr;
     int mask_width = 0;
@@ -42,9 +47,8 @@ void writeFinalCloudVertices(const FinalCloudFrame& cloud, GpuPointVertex* d_ver
 int finalCloudMeshIndexCount(const FinalCloudFrame& cloud);
 void writeFinalCloudMeshIndices(const FinalCloudFrame& cloud, std::uint32_t* d_indices,
                                 cudaStream_t stream);
-// Marks every mask-selected, depth-continuous grid cell, then copies the
-// source XYZ data and cell-validity flags for CPU mesh processing.
-// Call this before writeFinalCloudMeshIndices().
+// Copies source XYZ data and validity flags for CPU contour-based mesh construction.
+// The caller owns mask contour extraction and adaptive sampling.
 FinalCloudCpuMesh prepareFinalCloudMeshForCpu(const FinalCloudFrame& cloud, cudaStream_t stream);
 
 // Owns reusable GPU buffers for final-capture geometry. The TensorRT disparity
