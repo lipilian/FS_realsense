@@ -43,7 +43,7 @@ set(FFS_ANYLABELING_EXECUTABLE "/home/liu4000/miniconda3/envs/anylabeling/bin/an
     CACHE FILEPATH "Path to the AnyLabeling executable used by sentech_stereo")
 set(FFS_ANYLABELING_WORK_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/data/anylabeling"
     CACHE PATH "Fixed directory for the AnyLabeling input image and output JSON")
-set(FFS_ANYLABELING_AUTO_LABELING_MODEL "sam2.1_hiera_base_plus_20260221"
+set(FFS_ANYLABELING_AUTO_LABELING_MODEL "sam2.1_hiera_large_20260221"
     CACHE STRING "AnyLabeling model name loaded automatically for final-capture annotation")
 
 find_package(CUDAToolkit REQUIRED)

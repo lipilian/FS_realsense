@@ -375,42 +375,13 @@ std::uint64_t timestampDifference(std::uint64_t left, std::uint64_t right) {
     return left >= right ? left - right : right - left;
 }
 
-ffs_viewer::io::BgrFrame makeFoundationStereoInputLeft(
-    const ffs_viewer::io::BgrFrame &rectified_left) {
-    constexpr int kCropPixelsPerSide = 8;
-    constexpr int kFsInputWidth = 608;
-    constexpr int kFsInputHeight = 512;
-    const std::size_t expected_size =
-        static_cast<std::size_t>(rectified_left.width) * rectified_left.height * 3U;
-    if (!rectified_left.valid() || rectified_left.pixels.size() != expected_size ||
-        rectified_left.width <= 2 * kCropPixelsPerSide) {
-        throw std::invalid_argument(
-            "Saving AnnotateMe requires a valid rectified left stereo frame");
-    }
 
-    const cv::Mat rectified_image(rectified_left.height, rectified_left.width, CV_8UC3,
-                                  const_cast<std::uint8_t *>(rectified_left.pixels.data()));
-    cv::Mat resized;
-    cv::resize(rectified_image(cv::Rect(kCropPixelsPerSide, 0,
-                                        rectified_left.width - 2 * kCropPixelsPerSide,
-                                        rectified_left.height)),
-               resized, cv::Size(kFsInputWidth, kFsInputHeight), 0.0, 0.0, cv::INTER_AREA);
-
-    ffs_viewer::io::BgrFrame result;
-    result.width = resized.cols;
-    result.height = resized.rows;
-    result.frame_id = rectified_left.frame_id;
-    result.timestamp_ns = rectified_left.timestamp_ns;
-    result.pixels.assign(resized.datastart, resized.dataend);
-    return result;
-}
-
-std::filesystem::path saveRawStereoPair(const ffs_viewer::io::BgrFrame &left,
-                                         const ffs_viewer::io::BgrFrame &right,
-                                         const ffs_viewer::io::BgrFrame &foundation_stereo_left) {
-    if (!left.valid() || !right.valid() || !foundation_stereo_left.valid())
-        throw std::invalid_argument(
-            "Saving a raw stereo pair requires raw left/right and FoundationStereo input frames");
+std::filesystem::path saveRawStereoPair(
+    const ffs_viewer::io::BgrFrame &left, const ffs_viewer::io::BgrFrame &right,
+    const ffs_viewer::calibration::CharucoBoardConfig &calibration_board,
+    const ffs_viewer::calibration::StereoCharucoCalibrationResult &calibration) {
+    if (!left.valid() || !right.valid())
+        throw std::invalid_argument("Saving a raw stereo pair requires raw left/right frames");
 
     const std::time_t now = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
     std::tm local_time{};
@@ -430,14 +401,12 @@ std::filesystem::path saveRawStereoPair(const ffs_viewer::io::BgrFrame &left,
                              const_cast<std::uint8_t *>(left.pixels.data()));
     const cv::Mat right_image(right.height, right.width, CV_8UC3,
                               const_cast<std::uint8_t *>(right.pixels.data()));
-    const cv::Mat annotate_me_image(foundation_stereo_left.height, foundation_stereo_left.width,
-                                    CV_8UC3,
-                                    const_cast<std::uint8_t *>(foundation_stereo_left.pixels.data()));
     if (!cv::imwrite((output_directory / "left.png").string(), left_image) ||
-        !cv::imwrite((output_directory / "right.png").string(), right_image) ||
-        !cv::imwrite((output_directory / "AnnotateMe.png").string(), annotate_me_image)) {
+        !cv::imwrite((output_directory / "right.png").string(), right_image)) {
         throw std::runtime_error("Unable to save the raw stereo pair to " + output_directory.string());
     }
+    ffs_viewer::calibration::saveStereoCharucoCalibration(
+        output_directory / "calibration.json", calibration_board, calibration);
     return output_directory;
 }
 
@@ -791,9 +760,9 @@ int main() {
             ffs_viewer::io::BgrFrame rectified_right_frame;
             ffs_viewer::io::BgrFrame captured_raw_left_frame;
             ffs_viewer::io::BgrFrame captured_raw_right_frame;
-            ffs_viewer::io::BgrFrame captured_foundation_stereo_left_frame;
             bool raw_pair_ready_to_save = false;
             bool show_load_pair_dialog = false;
+            std::optional<std::filesystem::path> loaded_pair_directory;
             std::vector<std::filesystem::path> saved_raw_pair_directories;
             std::string load_pair_status;
             std::optional<ffs_viewer::calibration::RectifiedStereoCamera> active_rectified_camera;
@@ -832,6 +801,9 @@ int main() {
             std::shared_ptr<const ffs_viewer::inference::SentechFinalCaptureResult> displayed_final_capture;
             bool show_final_mask_editor = false;
             bool show_final_capture_view = false;
+            // A loaded/captured pair is shown as soon as it has been rectified. Keep this
+            // separate from displayed_final_capture because FS inference completes asynchronously.
+            bool final_capture_preview_active = false;
             cv::Mat final_mask_source;
             cv::Mat final_mask;
             std::optional<cv::Mat> pending_anylabeling_mask;
@@ -853,8 +825,16 @@ int main() {
                                          const ffs_viewer::calibration::RectifiedStereoCamera &rectified_camera,
                                          const std::string &source) {
                 if (show_final_mask_editor) {
+                    // A mask belongs to its source pair. Replacing the pair therefore
+                    // closes the editor and discards this unsaved mask.
+                    show_final_mask_editor = false;
+                    final_mask_source.release();
+                    final_mask.release();
+                    final_mask_stroke_active = false;
+                }
+                if (final_capture_pipeline.running()) {
                     throw std::logic_error(
-                        "Close the Draw window before taking another final capture");
+                        "Wait for the current FoundationStereo final capture to finish");
                 }
                 if (!raw_left.valid() || !raw_right.valid() || !rectified_left.valid() ||
                     !rectified_right.valid()) {
@@ -866,16 +846,24 @@ int main() {
                         "Close AnyLabeling before taking another final capture");
                 }
                 anylabeling_bridge.discardSavedAnnotation();
+                loaded_pair_directory.reset();
                 pending_anylabeling_mask.reset();
                 captured_raw_left_frame = raw_left;
                 captured_raw_right_frame = raw_right;
-                captured_foundation_stereo_left_frame =
-                    makeFoundationStereoInputLeft(rectified_left);
                 raw_pair_ready_to_save = true;
                 rectified_left_frame = rectified_left;
                 rectified_right_frame = rectified_right;
                 active_rectified_camera = rectified_camera;
                 show_rectified_images = true;
+
+                // Do not leave the previous FS result on screen while the new pair is
+                // running. The newly rectified pair is immediately visible in Stereo View;
+                // it is replaced by the 608 x 512 FS result pair when inference completes.
+                final_left_texture.upload(rectified_left_frame);
+                final_right_texture.upload(rectified_right_frame);
+                displayed_final_capture.reset();
+                show_final_capture_view = true;
+                final_capture_preview_active = true;
 
                 // The final FS run owns the GPU. Its input pair is copied by capture(),
                 // so live inference and acquisition can stop before it begins.
@@ -1089,7 +1077,9 @@ int main() {
                         try {
                             capture.start();
                             show_final_capture_view = false;
+                            loaded_pair_directory.reset();
                             show_final_mask_editor = false;
+                            final_capture_preview_active = false;
                             image_display_status = "Camera acquisition restarted";
                         } catch (const std::exception &error) {
                             std::cerr << "Start failed: " << error.what() << '\n';
@@ -1167,28 +1157,38 @@ int main() {
                 }
                 ImGui::EndDisabled();
                 ImGui::SameLine();
-                ImGui::BeginDisabled(!raw_pair_ready_to_save ||
-                                     !captured_foundation_stereo_left_frame.valid());
+                ImGui::BeginDisabled(!raw_pair_ready_to_save || !calibration_result.has_value() ||
+                                     !calibration_board_config.has_value() ||
+                                     final_capture_pipeline.running());
                 if (ImGui::Button("Save Pair")) {
                     try {
-                        const std::filesystem::path output_directory =
-                            saveRawStereoPair(captured_raw_left_frame, captured_raw_right_frame,
-                                              captured_foundation_stereo_left_frame);
+                        if (loaded_pair_directory.has_value()) {
+                            if (!final_point_cloud_viewer.hasVcgMesh()) {
+                                image_display_status =
+                                    "No VCG mesh is available; draw a mask before saving the loaded pair";
+                            } else {
+                                final_point_cloud_viewer.saveVcgMeshObj(
+                                    *loaded_pair_directory / "mesh.obj");
+                                image_display_status = "Saved mesh.obj to loaded pair folder " +
+                                                       loaded_pair_directory->string();
+                            }
+                        } else {
+                        const std::filesystem::path output_directory = saveRawStereoPair(
+                            captured_raw_left_frame, captured_raw_right_frame,
+                            *calibration_board_config, *calibration_result);
                         if (final_point_cloud_viewer.hasVcgMesh()) {
                             try {
                                 final_point_cloud_viewer.saveVcgMeshObj(output_directory / "mesh.obj");
                                 image_display_status =
-                                    "Saved pair, AnnotateMe.png, and mesh.obj to " +
-                                    output_directory.string();
+                                    "Saved raw pair, calibration.json, and mesh.obj to " + output_directory.string();
                             } catch (const std::exception &error) {
                                 image_display_status =
-                                    "Saved pair and AnnotateMe.png to " + output_directory.string() +
-                                    "; mesh.obj export failed: " + error.what();
+                                    "Saved raw pair and calibration.json to " + output_directory.string() + "; mesh.obj export failed: " + error.what();
                             }
                         } else {
                             image_display_status =
-                                "Saved pair and AnnotateMe.png to " + output_directory.string() +
-                                "; no VCG mesh was generated";
+                                "Saved raw pair and calibration.json to " + output_directory.string() + "; no VCG mesh was generated";
+                        }
                         }
                     } catch (const std::exception &error) {
                         image_display_status =
@@ -1197,6 +1197,7 @@ int main() {
                 }
                 ImGui::EndDisabled();
                 ImGui::SameLine();
+                ImGui::BeginDisabled(final_capture_pipeline.running());
                 if (ImGui::Button("Load Pair")) {
                     try {
                         saved_raw_pair_directories = savedRawPairDirectories();
@@ -1208,6 +1209,7 @@ int main() {
                                                std::string(error.what());
                     }
                 }
+                ImGui::EndDisabled();
                 if (show_load_pair_dialog) {
                     ImGui::OpenPopup("Load Pair");
                     show_load_pair_dialog = false;
@@ -1233,9 +1235,27 @@ int main() {
                         if (!ImGui::Selectable(name.c_str()))
                             continue;
                         try {
+                            ffs_viewer::calibration::CharucoBoardConfig pair_board;
+                            ffs_viewer::calibration::StereoCharucoCalibrationResult pair_calibration;
+                            const std::filesystem::path pair_calibration_path =
+                                directory / "calibration.json";
+                            if (!ffs_viewer::calibration::loadStereoCharucoCalibration(
+                                    pair_calibration_path, pair_board, pair_calibration)) {
+                                throw std::runtime_error(
+                                    "Saved pair has no calibration.json: " + directory.string());
+                            }
+                            charuco_detector.setBoardConfig(pair_board);
+                            charuco_config = pair_board;
+                            charuco_dictionary_index =
+                                charucoDictionaryIndex(charuco_config.dictionary_name);
+                            calibration_board_config = pair_board;
+                            calibration_result = std::move(pair_calibration);
+                            calibration_check_result.reset();
+                            stereo_rectifier.setCalibration(*calibration_result);
                             auto [left, right] = loadRawStereoPair(directory);
                             startFinalCaptureFromRawPair(left, right, "saved pair " + name);
-                            load_pair_status = "Loaded " + directory.string();
+                            load_pair_status = "Loaded pair and calibration from " + directory.string();
+                            loaded_pair_directory = directory;
                             ImGui::CloseCurrentPopup();
                         } catch (const std::exception &error) {
                             load_pair_status = "Load failed: " + std::string(error.what());
@@ -1481,12 +1501,17 @@ int main() {
                     disparity_texture.upload(final_capture->disparity_visualization);
                     displayed_final_capture = final_capture;
                     show_final_capture_view = true;
+                    final_capture_preview_active = false;
                 }
 
+                const bool showing_final_stereo = show_final_capture_view &&
+                                                  (final_capture_preview_active ||
+                                                   displayed_final_capture != nullptr);
                 const bool showing_final_capture =
-                    show_final_capture_view && displayed_final_capture != nullptr;
-                drawStereoView(showing_final_capture ? final_left_texture : left_texture,
-                               showing_final_capture ? final_right_texture : right_texture);
+                    showing_final_stereo && !final_capture_preview_active &&
+                    displayed_final_capture != nullptr;
+                drawStereoView(showing_final_stereo ? final_left_texture : left_texture,
+                               showing_final_stereo ? final_right_texture : right_texture);
                 if (show_rectified_images && ffs_pipeline.running() && !showing_final_capture) {
                     const auto disparity = ffs_pipeline.latestResult();
                     if (disparity &&

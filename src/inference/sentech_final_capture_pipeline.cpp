@@ -139,6 +139,9 @@ void SentechFinalCapturePipeline::capture(
         if (impl_->running)
             throw std::runtime_error("A final Sentech capture is already running");
         impl_->running = true;
+        // A new capture must not be mistaken for the previous asynchronous result.
+        // The viewer shows the new rectified stereo preview until this result arrives.
+        impl_->latest_result.reset();
         impl_->status = "Preparing FoundationStereo final capture...";
     }
     if (impl_->worker.joinable())
