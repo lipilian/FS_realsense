@@ -810,7 +810,7 @@ int main() {
             int final_mask_brush_radius = 4;
             bool final_mask_stroke_active = false;
             float final_mesh_depth_threshold_cm = 1.0F;
-            int final_mesh_downsample = 4;
+            int final_mesh_downsample = 1;
             cv::Point previous_final_mask_pixel;
             std::uint64_t uploaded_disparity_left_frame_id = 0;
             std::uint64_t uploaded_disparity_right_frame_id = 0;
