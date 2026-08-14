@@ -41,6 +41,7 @@ class MeshResult:
     vertices: Any
     triangles: Any
     colors: Any
+    area_m2: float
 
 
 def _repository_root(start: Path) -> Path:
@@ -378,10 +379,22 @@ def build_constrained_mesh(
 
     if not triangle_blocks:
         raise RuntimeError("No mesh triangles survived; relax edge/depth thresholds or inspect the mask")
+    vertices = np.concatenate(vertex_blocks)
+    triangles = np.concatenate(triangle_blocks)
+    colors = np.concatenate(color_blocks)
+    triangle_vertices = vertices[triangles]
+    area_m2 = 0.5 * np.linalg.norm(
+        np.cross(
+            triangle_vertices[:, 1] - triangle_vertices[:, 0],
+            triangle_vertices[:, 2] - triangle_vertices[:, 0],
+        ),
+        axis=1,
+    ).sum()
     return MeshResult(
-        vertices=np.concatenate(vertex_blocks),
-        triangles=np.concatenate(triangle_blocks),
-        colors=np.concatenate(color_blocks),
+        vertices=vertices,
+        triangles=triangles,
+        colors=colors,
+        area_m2=float(area_m2),
     )
 
 def save_triangle_mesh(mesh_result: MeshResult, output_path: Path) -> None:
