@@ -1167,9 +1167,9 @@ int main() {
                                 image_display_status =
                                     "No VCG mesh is available; draw a mask before saving the loaded pair";
                             } else {
-                                final_point_cloud_viewer.saveVcgMeshObj(
-                                    *loaded_pair_directory / "mesh.obj");
-                                image_display_status = "Saved mesh.obj to loaded pair folder " +
+                                final_point_cloud_viewer.saveVcgMeshPly(
+                                    *loaded_pair_directory / "mesh.ply");
+                                image_display_status = "Saved mesh.ply to loaded pair folder " +
                                                        loaded_pair_directory->string();
                             }
                         } else {
@@ -1178,12 +1178,12 @@ int main() {
                             *calibration_board_config, *calibration_result);
                         if (final_point_cloud_viewer.hasVcgMesh()) {
                             try {
-                                final_point_cloud_viewer.saveVcgMeshObj(output_directory / "mesh.obj");
+                                final_point_cloud_viewer.saveVcgMeshPly(output_directory / "mesh.ply");
                                 image_display_status =
-                                    "Saved raw pair, calibration.json, and mesh.obj to " + output_directory.string();
+                                    "Saved raw pair, calibration.json, and mesh.ply to " + output_directory.string();
                             } catch (const std::exception &error) {
                                 image_display_status =
-                                    "Saved raw pair and calibration.json to " + output_directory.string() + "; mesh.obj export failed: " + error.what();
+                                    "Saved raw pair and calibration.json to " + output_directory.string() + "; mesh.ply export failed: " + error.what();
                             }
                         } else {
                             image_display_status =

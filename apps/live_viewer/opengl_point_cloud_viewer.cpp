@@ -324,29 +324,44 @@ bool OpenGLPointCloudViewer::hasVcgMesh() const noexcept {
     return vcg_mesh_ != nullptr && vcg_mesh_->mesh.fn > 0;
 }
 
-void OpenGLPointCloudViewer::saveVcgMeshObj(const std::filesystem::path &path) const {
+void OpenGLPointCloudViewer::saveVcgMeshPly(const std::filesystem::path &path) const {
     if (!hasVcgMesh())
         throw std::logic_error("No VCG mesh is available to save");
 
     const VcgAreaMesh &mesh = vcg_mesh_->mesh;
+    std::size_t face_count = 0;
+    for (const VcgAreaFace &face : mesh.face) {
+        if (!face.IsD())
+            ++face_count;
+    }
+
     std::ofstream output(path);
     if (!output)
-        throw std::runtime_error("Unable to create OBJ file: " + path.string());
-    output << "# FoundationStereo VCG mesh; coordinates are in meters" << std::string(1, 10);
+        throw std::runtime_error("Unable to create PLY file: " + path.string());
+    output << "ply" << std::string(1, 10)
+           << "format ascii 1.0" << std::string(1, 10)
+           << "comment FoundationStereo mesh; coordinates are in meters" << std::string(1, 10)
+           << "element vertex " << mesh.vert.size() << std::string(1, 10)
+           << "property float x" << std::string(1, 10)
+           << "property float y" << std::string(1, 10)
+           << "property float z" << std::string(1, 10)
+           << "element face " << face_count << std::string(1, 10)
+           << "property list uchar int vertex_indices" << std::string(1, 10)
+           << "end_header" << std::string(1, 10);
     for (const VcgAreaVertex &vertex : mesh.vert) {
         const vcg::Point3f &position = vertex.cP();
-        output << "v " << position[0] << " " << position[1] << " " << position[2]
+        output << position[0] << " " << position[1] << " " << position[2]
                << std::string(1, 10);
     }
     for (const VcgAreaFace &face : mesh.face) {
         if (face.IsD())
             continue;
-        output << "f " << vcg::tri::Index(mesh, face.cV(0)) + 1U << " "
-               << vcg::tri::Index(mesh, face.cV(1)) + 1U << " "
-               << vcg::tri::Index(mesh, face.cV(2)) + 1U << std::string(1, 10);
+        output << "3 " << vcg::tri::Index(mesh, face.cV(0)) << " "
+               << vcg::tri::Index(mesh, face.cV(1)) << " "
+               << vcg::tri::Index(mesh, face.cV(2)) << std::string(1, 10);
     }
     if (!output)
-        throw std::runtime_error("Unable to write OBJ file: " + path.string());
+        throw std::runtime_error("Unable to write PLY file: " + path.string());
 }
 
 void OpenGLPointCloudViewer::resetToLeftCameraView() {

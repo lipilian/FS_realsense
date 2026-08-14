@@ -42,7 +42,7 @@ class OpenGLPointCloudViewer {
         return mesh_component_areas_;
     }
     bool hasVcgMesh() const noexcept;
-    void saveVcgMeshObj(const std::filesystem::path &path) const;
+    void saveVcgMeshPly(const std::filesystem::path &path) const;
 
   private:
     struct Camera {
