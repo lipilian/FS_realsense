@@ -7,7 +7,7 @@ models/**/*.onnx
 models/**/*.pth
 
 data/
-
+result/
 build/
 
 # ImGui and other local application settings.
